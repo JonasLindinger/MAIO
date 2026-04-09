@@ -207,18 +207,45 @@ class _EventList extends StatelessWidget {
     required this.resolveAvatarUrl,
   });
 
+  bool isVisibleInTimeline(Event e) {
+    switch (e.type) {
+      case "m.room.message":
+        return true;
+
+      case "m.room.redaction":
+        return false;
+
+      case "m.reaction":
+        return false;
+
+      case "m.room.member":
+        return false;
+
+      case "m.room.name":
+        return false;
+      case "m.room.topic":
+        return false; // optional system info
+
+      default:
+        return false;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final visibleEvents = events.where(isVisibleInTimeline).toList();
+
     return ListView.builder(
       controller: scrollController,
       reverse: true,
       addAutomaticKeepAlives: false,
       addRepaintBoundaries: true,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      itemCount: events.length,
+      itemCount: visibleEvents.length,
       itemBuilder: (context, index) {
-        final event = events[index];
+        final event = visibleEvents[index];
         final isOwn = event.senderId == ownUserId;
+
         return _MessageRow(
           key: ValueKey(event.eventId),
           event: event,
@@ -227,6 +254,96 @@ class _EventList extends StatelessWidget {
           isOwn: isOwn,
           resolveAvatarUrl: resolveAvatarUrl,
         );
+
+        /*
+        switch (event.type) {
+          case "m.room.message":
+            // Normal message
+            break;
+          case "m.reaction":
+            // A reaction happended.
+            return const SizedBox.shrink();
+            break;
+          case "m.room.redaction":
+            // Something was deleted
+            return const SizedBox.shrink();
+            break;
+          case "m.room.member":
+            // User joins leaves kicks invites
+            // Todo: display somehow
+            return const SizedBox.shrink();
+            break;
+          case "m.room.create":
+            // Room was created
+            // Todo: display somehow
+            return const SizedBox.shrink();
+            break;
+          case "m.room.power_levels":
+            // Power level changed (e.g. from the user)
+            // Todo: display somehow
+            return const SizedBox.shrink();
+            break;
+          case "m.room.join_rules":
+            // Join rules updated
+            // Todo: display somehow
+            return const SizedBox.shrink();
+            break;
+          case "m.room.history_visibility":
+            // History visibility updated
+            // Todo: display somehow
+            return const SizedBox.shrink();
+            break;
+          case "m.room.guest_access":
+            // Guest access ??? Todo: figure this out
+            return const SizedBox.shrink();
+            break;
+          case "m.room.topic":
+            // Room topic updated
+            // Todo: display somehow
+            return const SizedBox.shrink();
+            break;
+          case "m.room.name":
+            // Room name updated
+            // Todo: display somehow
+            return const SizedBox.shrink();
+            break;
+          case "m.room.avatar":
+            // Room avatar updated
+            // Todo: display somehow
+            return const SizedBox.shrink();
+            break;
+          case "com.beeper.disappearing_timer":
+            // Todo: figure out what this is
+            // Todo: display somehow
+            return const SizedBox.shrink();
+            break;
+          case "com.beeper.room_features":
+            // Room features updated
+            // Todo: display somehow
+            return const SizedBox.shrink();
+            break;
+          case "m.bridge":
+            // Todo: figure this out
+            // Todo: display somehow
+            return const SizedBox.shrink();
+            break;
+          case "uk.half-shot.bridge":
+            // Todo: figure this out
+            // Todo: display somehow
+            return const SizedBox.shrink();
+            break;
+          case "io.element.functional_members":
+            // Todo: figure this out
+            // Todo: display somehow
+            return const SizedBox.shrink();
+            break;
+          default:
+            print(event.type.toString() + " can't be handled");
+            return const SizedBox.shrink();
+            break;
+        }
+
+         */
       },
     );
   }

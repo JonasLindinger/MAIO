@@ -45,6 +45,7 @@ dependencies:
   mime: ^1.0.6
   cached_network_image: ^3.4.1
   open_filex: ^4.7.0
+  emoji_picker_flutter: ^4.4.0
 
 dev_dependencies:
   flutter_test:

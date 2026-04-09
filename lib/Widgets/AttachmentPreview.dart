@@ -398,11 +398,12 @@ class _FilePreview extends StatelessWidget {
               const SizedBox(width: 12),
               Expanded(
                 child: Text(name,
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500),
-                    overflow: TextOverflow.ellipsis),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500
+                  ),
+                  overflow: TextOverflow.ellipsis),
               ),
               const SizedBox(width: 8),
               const Icon(Icons.download_rounded,
