@@ -23,17 +23,13 @@ class MessageBubble extends StatelessWidget {
 
     if (!event.hasAttachment) return body;
 
-    // Only show if it's NOT just a filename
-    final mime = event.attachmentMimetype;
+    final filename = event.content['filename'];
 
-    if (mime.startsWith('image/') || mime.startsWith('video/')) {
-      // Hide if body looks like a filename
-      if (body.contains('.') && body.length < 40) {
-        return null;
-      }
+    if (filename != null && filename != body) {
+      return body;
     }
 
-    return body;
+    return null;
   }
 
   bool _isFileEvent(Event event) {
