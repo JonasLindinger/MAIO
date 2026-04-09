@@ -48,6 +48,7 @@ class MaioClient extends StatelessWidget {
         child: child,
       ),
       home: client.isLogged() ? const RoomListPage() : const LoginPage(),
+      debugShowCheckedModeBanner: false,
     );
   }
 }

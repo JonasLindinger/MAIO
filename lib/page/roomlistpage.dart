@@ -60,12 +60,24 @@ class _RoomListPageState extends State<RoomListPage> {
   Widget build(BuildContext context) {
     final client = Provider.of<Client>(context, listen: false);
     return Scaffold(
+      backgroundColor: const Color(0xFF0B0F14),
       appBar: AppBar(
-        title: const Text('Chats'),
+        backgroundColor: const Color(0xFF0B0F14),
+        title: const Text(
+          'Chats',
+          style: TextStyle(
+            color: Color(0xFFF2F4F7)
+          ),
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: _logout,
+            style: const ButtonStyle(
+              foregroundColor: WidgetStateProperty<Color>.fromMap(<WidgetStatesConstraint, Color>{
+                WidgetState.any: Color(0xFFF2F4F7),
+              }),
+            ),
           ),
         ],
       ),
@@ -83,38 +95,56 @@ class _RoomListPageState extends State<RoomListPage> {
                 height: 56,
               ),
               builder: (context, snapshot) {
-                final uri = snapshot.data;
+                final Uri? uri = snapshot.data;
 
-                if (uri == null) {
-                  return const CircleAvatar(
-                    child: Icon(Icons.chat_bubble_outline),
-                  );
-                }
-
-                return CircleAvatar(
-                  foregroundImage: NetworkImage(
-                    uri.toString(),
-                    headers: {
-                      'Authorization': 'Bearer ${client.accessToken}',
-                    },
-                  ),
-                  onForegroundImageError: (_, __) {},
-                  child: const Icon(Icons.chat_bubble_outline),
+                return _buildAvatar(
+                  imageUri: uri,
+                  client: client,
+                  fallbackIcon: Icons.chat_bubble_outline
                 );
               },
             ),
             title: Row(
               children: [
-                Expanded(child: Text(client.rooms[i].displayname)),
+                Expanded(
+                  child: Text(
+                    client.rooms[i].name.isEmpty ? client.rooms[i].getLocalizedDisplayname() : client.rooms[i].name,
+                    style: const TextStyle(
+                      color: Color(0xFFF2F4F7)
+                    ),
+                  ),
+                ),
                 if (client.rooms[i].notificationCount > 0)
+                  /*
+                  // Dot
                   Material(
                     borderRadius: BorderRadius.circular(99),
-                    color: Colors.red,
+                    color: const Color(0xFF4C8DF6),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4.0),
+                    ),
+                  )
+                  */
+
+                  // Number
+                  Text(
+                    client.rooms[i].notificationCount.toString(),
+                    style: const TextStyle(
+                      color: Color(0xFF4C8DF6)
+                    ),
+                  )
+
+                  /*
+                  // Number with bg dot
+                  Material(
+                    borderRadius: BorderRadius.circular(99),
+                    color: const Color(0xFF4C8DF6),
                     child: Padding(
                       padding: const EdgeInsets.all(2.0),
                       child: Text(client.rooms[i].notificationCount.toString()),
                     ),
                   )
+                   */
               ],
             ),
             subtitle: Text(
