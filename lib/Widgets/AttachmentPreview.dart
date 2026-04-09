@@ -1,8 +1,9 @@
 import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
 
 class AttachmentPreview extends StatelessWidget {
   final Timeline timeline;
@@ -31,34 +32,157 @@ class AttachmentPreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final name = event.getDisplayEvent(timeline).body.trim();
+    if (_isImage()) {
+      return _ImagePreview(event: event, name: name, mediaUrl: _mediaUrl);
+    }
+    if (_isVideo()) {
+      return _VideoPreview(event: event, name: name, mediaUrl: _mediaUrl);
+    }
+    return _FilePreview(event: event, name: name, mediaUrl: _mediaUrl);
+  }
+}
 
-    if (_isImage()) return _ImagePreview(event: event, name: name, mediaUrl: _mediaUrl);
-    if (_isVideo()) return _VideoPreview(event: event, name: name, mediaUrl: _mediaUrl, context: context);
+// ─── Shared download helper ───────────────────────────────────────────────────
 
-    return _FilePreview(
-      event: event,
-      name: name,
-      mediaUrl: _mediaUrl,
-      timeline: timeline,
-      context: context,
+Future<void> _saveAndOpen(
+    BuildContext context,
+    String url,
+    String fileName, {
+      bool openAfter = false,
+    }) async {
+  final messenger = ScaffoldMessenger.of(context);
+  messenger.showSnackBar(const SnackBar(
+    content: Text('Downloading…'),
+    duration: Duration(seconds: 60),
+    backgroundColor: Color(0xFF1C2430),
+  ));
+
+  try {
+    final Directory dir;
+    if (Platform.isAndroid || Platform.isIOS) {
+      dir = await getTemporaryDirectory();
+    } else {
+      dir = await getDownloadsDirectory() ?? await getTemporaryDirectory();
+    }
+
+    final safe = fileName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final path = '${dir.path}/$safe';
+
+    final client = HttpClient();
+    final req = await client.getUrl(Uri.parse(url));
+    final res = await req.close();
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw HttpException('HTTP ${res.statusCode}');
+    }
+    final sink = File(path).openWrite();
+    await for (final chunk in res) sink.add(chunk);
+    await sink.close();
+    client.close(force: false);
+
+    messenger.hideCurrentSnackBar();
+
+    if (openAfter) {
+      final result = await OpenFilex.open(path);
+      if (result.type != ResultType.done) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('Could not open: ${result.message}'),
+          backgroundColor: Colors.redAccent,
+        ));
+      }
+    } else {
+      messenger.showSnackBar(SnackBar(
+        content: Text('Saved: $safe'),
+        backgroundColor: const Color(0xFF1C2430),
+        duration: const Duration(seconds: 3),
+        action: SnackBarAction(
+          label: 'Open',
+          textColor: const Color(0xFF4C8DF6),
+          onPressed: () => OpenFilex.open(path),
+        ),
+      ));
+    }
+  } catch (e) {
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(SnackBar(
+      content: Text('Download failed: $e'),
+      backgroundColor: Colors.redAccent,
+    ));
+  }
+}
+
+// ─── In-app fullscreen image viewer ──────────────────────────────────────────
+
+void _openImageViewer(BuildContext context, String url, String name) {
+  Navigator.of(context).push(PageRouteBuilder(
+    opaque: false,
+    barrierColor: Colors.black,
+    pageBuilder: (_, __, ___) => _ImageViewerPage(url: url, name: name),
+    transitionsBuilder: (_, anim, __, child) =>
+        FadeTransition(opacity: anim, child: child),
+  ));
+}
+
+class _ImageViewerPage extends StatelessWidget {
+  final String url;
+  final String name;
+  const _ImageViewerPage({required this.url, required this.name});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.download_outlined),
+            tooltip: 'Save',
+            onPressed: () => _saveAndOpen(context, url, name),
+          ),
+        ],
+      ),
+      body: Center(
+        child: InteractiveViewer(
+          minScale: 0.5,
+          maxScale: 6,
+          child: CachedNetworkImage(
+            imageUrl: url,
+            fit: BoxFit.contain,
+            filterQuality: FilterQuality.high,
+            placeholder: (_, __) => const Center(
+              child: CircularProgressIndicator(
+                color: Colors.white54,
+                strokeWidth: 2,
+              ),
+            ),
+            errorWidget: (_, __, ___) => const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.broken_image_outlined,
+                    color: Colors.white54, size: 64),
+                SizedBox(height: 8),
+                Text('Could not load image',
+                    style: TextStyle(color: Colors.white54)),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Image
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Image preview ────────────────────────────────────────────────────────────
 
 class _ImagePreview extends StatelessWidget {
   final Event event;
   final String name;
   final String Function(Uri) mediaUrl;
-
-  const _ImagePreview({
-    required this.event,
-    required this.name,
-    required this.mediaUrl,
-  });
+  const _ImagePreview(
+      {required this.event, required this.name, required this.mediaUrl});
 
   @override
   Widget build(BuildContext context) {
@@ -66,309 +190,78 @@ class _ImagePreview extends StatelessWidget {
       future: event.getAttachmentUri(),
       builder: (context, snap) {
         final uri = snap.data;
+
+        // Loading state
+        if (snap.connectionState != ConnectionState.done) {
+          return _shell(
+            child: const Center(child: CircularProgressIndicator.adaptive()),
+          );
+        }
+
         if (uri == null) {
-          return _placeholder(const Icon(Icons.broken_image_outlined,
-              color: Colors.white70));
+          return _shell(
+            child: const Center(
+              child: Icon(Icons.broken_image_outlined, color: Colors.white54),
+            ),
+          );
         }
 
         final url = mediaUrl(uri);
 
         return GestureDetector(
-          onTap: () => _showFullscreen(context, url, name),
-          child: Stack(
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(14),
-                child: CachedNetworkImage(
+          onTap: () => _openImageViewer(context, url, name),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Stack(
+              children: [
+                CachedNetworkImage(
                   imageUrl: url,
-                  fit: BoxFit.contain,
+                  fit: BoxFit.cover,
                   memCacheWidth: 640,
                   width: double.infinity,
-                  placeholder: (_, __) => _placeholder(
-                    const CircularProgressIndicator.adaptive(),
+                  // Show a thumbnail-sized preview
+                  height: 200,
+                  placeholder: (_, __) => _shell(
+                    child: const Center(
+                        child: CircularProgressIndicator.adaptive()),
                   ),
-                  errorWidget: (_, __, ___) => _placeholder(
-                    const Icon(Icons.broken_image_outlined,
-                        color: Colors.white70),
-                  ),
-                ),
-              ),
-              Positioned(
-                bottom: 8,
-                right: 8,
-                child: _DownloadButton(
-                  onTap: () => _downloadMedia(context, uri, name),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _placeholder(Widget child) => Container(
-    width: double.infinity,
-    height: 180,
-    decoration: BoxDecoration(
-      color: const Color(0xFF0F141B),
-      borderRadius: BorderRadius.circular(14),
-      border: Border.all(color: const Color(0xFF263041)),
-    ),
-    child: Center(child: child),
-  );
-
-  void _showFullscreen(BuildContext context, String url, String name) {
-    showDialog<void>(
-      context: context,
-      barrierColor: Colors.black.withOpacity(0.95),
-      builder: (_) => Dialog(
-        insetPadding: const EdgeInsets.all(12),
-        backgroundColor: Colors.transparent,
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: InteractiveViewer(
-                minScale: 0.8,
-                maxScale: 4,
-                child: Center(
-                  child: CachedNetworkImage(
-                    imageUrl: url,
-                    fit: BoxFit.contain,
-                    filterQuality: FilterQuality.high,
-                    errorWidget: (_, __, ___) => const Icon(
-                        Icons.broken_image_outlined,
-                        color: Colors.white70,
-                        size: 64),
+                  errorWidget: (_, __, ___) => _shell(
+                    child: const Center(
+                      child: Icon(Icons.broken_image_outlined,
+                          color: Colors.white54),
+                    ),
                   ),
                 ),
-              ),
-            ),
-            Positioned(
-              top: 12,
-              right: 12,
-              child: Material(
-                color: const Color(0xAA000000),
-                shape: const CircleBorder(),
-                child: IconButton(
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close, color: Colors.white),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _downloadMedia(
-      BuildContext context, Uri uri, String fileName) async {
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      final savePath = await FilePicker.platform
-          .saveFile(dialogTitle: 'Save as', fileName: fileName);
-      if (savePath == null) return;
-      await _downloadWithProgress(uri, savePath);
-      messenger.showSnackBar(SnackBar(
-        content: Text('Saved to $savePath'),
-        backgroundColor: const Color(0xFF1C2430),
-      ));
-    } catch (e) {
-      messenger.showSnackBar(SnackBar(
-        content: Text('Download failed: $e'),
-        backgroundColor: Colors.redAccent,
-      ));
-    }
-  }
-
-  Future<void> _downloadWithProgress(Uri uri, String path) async {
-    final client = HttpClient();
-    final req = await client.getUrl(Uri.parse(mediaUrl(uri)));
-    final res = await req.close();
-    final sink = File(path).openWrite();
-    await for (final chunk in res) {
-      sink.add(chunk);
-    }
-    await sink.close();
-    client.close();
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Video
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _VideoPreview extends StatelessWidget {
-  final Event event;
-  final String name;
-  final String Function(Uri) mediaUrl;
-  final BuildContext context;
-
-  const _VideoPreview({
-    required this.event,
-    required this.name,
-    required this.mediaUrl,
-    required this.context,
-  });
-
-  @override
-  Widget build(BuildContext ctx) {
-    return FutureBuilder<Uri?>(
-      future: event.getAttachmentUri(),
-      builder: (ctx, snap) {
-        final uri = snap.data;
-        return GestureDetector(
-          onTap: uri == null ? null : () => _showVideo(ctx, uri),
-          child: Stack(
-            children: [
-              Container(
-                width: double.infinity,
-                constraints: const BoxConstraints(minHeight: 180),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0F141B),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: const Center(
-                  child: Icon(Icons.play_circle_fill,
-                      size: 64, color: Colors.white70),
-                ),
-              ),
-              if (uri != null)
+                // Tap-to-expand hint
                 Positioned(
-                  bottom: 8,
-                  right: 8,
-                  child: _DownloadButton(
-                    onTap: () => _downloadVideo(ctx, uri),
+                  bottom: 8, left: 8,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.zoom_out_map,
+                            color: Colors.white, size: 14),
+                        SizedBox(width: 4),
+                        Text('View',
+                            style: TextStyle(
+                                color: Colors.white, fontSize: 12)),
+                      ],
+                    ),
                   ),
                 ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  void _showVideo(BuildContext context, Uri uri) {
-    showDialog<void>(
-      context: context,
-      barrierColor: Colors.black.withOpacity(0.95),
-      builder: (_) => Dialog(
-        backgroundColor: const Color(0xFF0B0F14),
-        insetPadding: const EdgeInsets.all(12),
-        child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.play_circle_fill,
-                  size: 88, color: Colors.white70),
-              const SizedBox(height: 16),
-              const Text('Video attachment',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600)),
-              const SizedBox(height: 8),
-              const Text('Open the media URL in a browser/player to watch it.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Color(0xFF98A2B3))),
-              const SizedBox(height: 12),
-              SelectableText(mediaUrl(uri),
-                  style:
-                  const TextStyle(color: Colors.white70, fontSize: 12)),
-              const SizedBox(height: 16),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Close'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _downloadVideo(BuildContext context, Uri uri) async {
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      final savePath = await FilePicker.platform
-          .saveFile(dialogTitle: 'Save video as', fileName: name);
-      if (savePath == null) return;
-      final client = HttpClient();
-      final req = await client.getUrl(Uri.parse(mediaUrl(uri)));
-      final res = await req.close();
-      final sink = File(savePath).openWrite();
-      await for (final chunk in res) sink.add(chunk);
-      await sink.close();
-      client.close();
-      messenger.showSnackBar(SnackBar(
-          content: Text('Saved to $savePath'),
-          backgroundColor: const Color(0xFF1C2430)));
-    } catch (e) {
-      messenger.showSnackBar(SnackBar(
-          content: Text('Download failed: $e'),
-          backgroundColor: Colors.redAccent));
-    }
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// File / generic
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _FilePreview extends StatelessWidget {
-  final Event event;
-  final String name;
-  final String Function(Uri) mediaUrl;
-  final Timeline timeline;
-  final BuildContext context;
-
-  const _FilePreview({
-    required this.event,
-    required this.name,
-    required this.mediaUrl,
-    required this.timeline,
-    required this.context,
-  });
-
-  @override
-  Widget build(BuildContext ctx) {
-    return FutureBuilder<Uri?>(
-      future: event.getAttachmentUri(),
-      builder: (ctx, snap) {
-        final uri = snap.data;
-        return InkWell(
-          onTap: uri == null ? null : () => _open(ctx, uri),
-          borderRadius: BorderRadius.circular(14),
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF0F141B),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFF263041)),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.insert_drive_file_outlined,
-                    color: Colors.white70),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    name,
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500),
-                    overflow: TextOverflow.ellipsis,
+                Positioned(
+                  bottom: 8, right: 8,
+                  child: _CircleBtn(
+                    icon: Icons.download,
+                    onTap: () => _saveAndOpen(context, url, name),
                   ),
                 ),
-                const SizedBox(width: 10),
-                const Icon(Icons.download_rounded, color: Colors.white70),
               ],
             ),
           ),
@@ -377,49 +270,169 @@ class _FilePreview extends StatelessWidget {
     );
   }
 
-  Future<void> _open(BuildContext context, Uri uri) async {
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      final savePath = await FilePicker.platform.saveFile(
-          dialogTitle: 'Save attachment as', fileName: name);
-      if (savePath == null) return;
-      final client = HttpClient();
-      final req = await client.getUrl(Uri.parse(mediaUrl(uri)));
-      final res = await req.close();
-      if (res.statusCode < 200 || res.statusCode >= 300) {
-        throw HttpException('HTTP ${res.statusCode}', uri: uri);
-      }
-      final bytes = await res.fold<List<int>>(
-          [], (buf, chunk) => buf..addAll(chunk));
-      await File(savePath).writeAsBytes(bytes, flush: true);
-      client.close();
-      messenger.showSnackBar(SnackBar(
-          content: Text('Saved to $savePath'),
-          backgroundColor: const Color(0xFF1C2430)));
-    } catch (e) {
-      messenger.showSnackBar(SnackBar(
-          content: Text('Download failed: $e'),
-          backgroundColor: Colors.redAccent));
-    }8
-  }
+  Widget _shell({required Widget child}) => Container(
+    width: double.infinity,
+    height: 200,
+    decoration: BoxDecoration(
+      color: const Color(0xFF0F141B),
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: const Color(0xFF263041)),
+    ),
+    child: child,
+  );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Shared small widgets
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Video preview ────────────────────────────────────────────────────────────
 
-class _DownloadButton extends StatelessWidget {
-  final VoidCallback onTap;
-  const _DownloadButton({required this.onTap});
+class _VideoPreview extends StatelessWidget {
+  final Event event;
+  final String name;
+  final String Function(Uri) mediaUrl;
+  const _VideoPreview(
+      {required this.event, required this.name, required this.mediaUrl});
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.black54,
-      shape: const CircleBorder(),
-      child: IconButton(
-        icon: const Icon(Icons.download, color: Colors.white),
-        onPressed: onTap,
+    return FutureBuilder<Uri?>(
+      future: event.getAttachmentUri(),
+      builder: (context, snap) {
+        final uri = snap.data;
+        final url = uri == null ? null : mediaUrl(uri);
+
+        return GestureDetector(
+          onTap: url == null
+              ? null
+              : () => _saveAndOpen(context, url, name, openAfter: true),
+          child: Container(
+            width: double.infinity,
+            height: 160,
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F141B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFF263041)),
+            ),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 56, height: 56,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.12),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.play_arrow_rounded,
+                          color: Colors.white, size: 32),
+                    ),
+                    const SizedBox(height: 10),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Text(
+                        name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.white60, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+                if (url != null)
+                  Positioned(
+                    bottom: 10, right: 10,
+                    child: _CircleBtn(
+                      icon: Icons.download,
+                      onTap: () => _saveAndOpen(context, url, name),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ─── File preview ─────────────────────────────────────────────────────────────
+
+class _FilePreview extends StatelessWidget {
+  final Event event;
+  final String name;
+  final String Function(Uri) mediaUrl;
+  const _FilePreview(
+      {required this.event, required this.name, required this.mediaUrl});
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Uri?>(
+      future: event.getAttachmentUri(),
+      builder: (context, snap) {
+        final uri = snap.data;
+        final url = uri == null ? null : mediaUrl(uri);
+        return InkWell(
+          onTap: url == null
+              ? null
+              : () => _saveAndOpen(context, url, name, openAfter: true),
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F141B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFF263041)),
+            ),
+            child: Row(children: [
+              Container(
+                width: 40, height: 40,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E2A38),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.insert_drive_file_outlined,
+                    color: Color(0xFF4C8DF6), size: 22),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(name,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500),
+                    overflow: TextOverflow.ellipsis),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.download_rounded,
+                  color: Colors.white54, size: 20),
+            ]),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ─── Shared small button ──────────────────────────────────────────────────────
+
+class _CircleBtn extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+  const _CircleBtn({required this.icon, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 34, height: 34,
+        decoration: const BoxDecoration(
+          color: Colors.black54,
+          shape: BoxShape.circle,
+        ),
+        child: Icon(icon, color: Colors.white, size: 18),
       ),
     );
   }

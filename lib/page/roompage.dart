@@ -23,8 +23,8 @@ class _RoomPageState extends State<RoomPage> {
   bool _isRequestingHistory = false;
   bool _isSendingMedia = false;
 
-  // Resolved avatar URL strings, keyed by senderId. null = no avatar.
-  final Map<String, String?> _avatarUrlCache = {};
+  // Resolved avatar URL strings, keyed by senderId
+  final Map<String, String?> _avatarCache = {};
 
   @override
   void initState() {
@@ -38,8 +38,22 @@ class _RoomPageState extends State<RoomPage> {
     _timelineFuture.then((tl) {
       _timeline = tl;
       _updateEvents();
+      // Mark all messages as read when the timeline is ready
+      _markAsRead();
     });
     _scrollController.addListener(_onScroll);
+  }
+
+  /// Send a read receipt for the latest event, clearing the notification badge.
+  Future<void> _markAsRead() async {
+    try {
+      final latestEvent = widget.room.lastEvent;
+      if (latestEvent != null) {
+        await widget.room.setReadMarker(latestEvent.eventId);
+      }
+    } catch (_) {
+      // Non-critical — ignore failures silently
+    }
   }
 
   @override
@@ -57,7 +71,6 @@ class _RoomPageState extends State<RoomPage> {
         .where((e) => e.relationshipEventId == null)
         .toList(growable: false);
 
-    // Bail early — avoid setState if nothing the UI cares about changed
     if (next.length == _events.length) {
       bool same = true;
       for (int i = 0; i < next.length; i++) {
@@ -91,14 +104,12 @@ class _RoomPageState extends State<RoomPage> {
     }
   }
 
-  /// Returns a resolved HTTPS URL for the sender's avatar, or null.
-  /// Result is cached so the async work runs at most once per sender.
   Future<String?> _resolveAvatarUrl(Event event) async {
     final id = event.senderId;
-    if (_avatarUrlCache.containsKey(id)) return _avatarUrlCache[id];
+    if (_avatarCache.containsKey(id)) return _avatarCache[id];
     final mxUri = event.senderFromMemoryOrFallback.avatarUrl;
     if (mxUri == null) {
-      _avatarUrlCache[id] = null;
+      _avatarCache[id] = null;
       return null;
     }
     try {
@@ -107,16 +118,13 @@ class _RoomPageState extends State<RoomPage> {
         width: 48,
         height: 48,
       );
-      // Append access token once, store as plain string
       final token = widget.room.client.accessToken ?? '';
       final sep = uri.query.isEmpty ? '?' : '&';
-      final url = token.isEmpty
-          ? uri.toString()
-          : '${uri}${sep}access_token=$token';
-      _avatarUrlCache[id] = url;
+      final url = token.isEmpty ? uri.toString() : '$uri${sep}access_token=$token';
+      _avatarCache[id] = url;
       return url;
     } catch (_) {
-      _avatarUrlCache[id] = null;
+      _avatarCache[id] = null;
       return null;
     }
   }
@@ -159,12 +167,16 @@ class _RoomPageState extends State<RoomPage> {
               composerFocusNode: _composerFocusNode,
               isSendingMedia: _isSendingMedia,
               room: room,
-              onSendMessage: () { if (mounted) setState(() {}); },
+              onSendMessage: () {
+                if (mounted) setState(() {});
+                _markAsRead();
+              },
               onStartSendingMedia: () {
                 if (mounted) setState(() => _isSendingMedia = true);
               },
               onFinishedSendingMedia: () {
                 if (mounted) setState(() => _isSendingMedia = false);
+                _markAsRead();
               },
             ),
           ],
@@ -200,7 +212,6 @@ class _EventList extends StatelessWidget {
     return ListView.builder(
       controller: scrollController,
       reverse: true,
-      // Keeps items alive across scroll so they don't re-render from scratch
       addAutomaticKeepAlives: false,
       addRepaintBoundaries: true,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -294,24 +305,20 @@ class _MessageRow extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Avatar — resolves once, then uses CachedNetworkImage for disk cache
+// Avatar — resolves once via parent cache, then CachedNetworkImage handles disk
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _AvatarWidget extends StatefulWidget {
   final Event event;
   final Future<String?> Function(Event) resolveAvatarUrl;
 
-  const _AvatarWidget({
-    required this.event,
-    required this.resolveAvatarUrl,
-  });
+  const _AvatarWidget({required this.event, required this.resolveAvatarUrl});
 
   @override
   State<_AvatarWidget> createState() => _AvatarWidgetState();
 }
 
 class _AvatarWidgetState extends State<_AvatarWidget> {
-  // Three states: null = not loaded yet, '' = no avatar, url = has avatar
   String? _url;
   bool _resolved = false;
 
@@ -331,21 +338,21 @@ class _AvatarWidgetState extends State<_AvatarWidget> {
 
   @override
   Widget build(BuildContext context) {
-    if (!_resolved || (_url == null || _url!.isEmpty)) return _placeholder;
+    if (!_resolved || _url == null || _url!.isEmpty) return _placeholder;
 
     return CachedNetworkImage(
       imageUrl: _url!,
-      imageBuilder: (context, imageProvider) => CircleAvatar(
+      memCacheWidth: 72,
+      memCacheHeight: 72,
+      imageBuilder: (_, img) => CircleAvatar(
         radius: 18,
-        backgroundImage: imageProvider,
+        backgroundImage: img,
         backgroundColor: const Color(0xFF2A3441),
       ),
       placeholder: (_, __) => _placeholder,
       errorWidget: (_, __, ___) => _placeholder,
       width: 36,
       height: 36,
-      memCacheWidth: 72,
-      memCacheHeight: 72,
     );
   }
 }
