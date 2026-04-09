@@ -35,7 +35,7 @@ class _LoginPageState extends State<LoginPage> {
       );
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const RoomListPage()),
-            (route) => false,
+          (route) => false,
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
