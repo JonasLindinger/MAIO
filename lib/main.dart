@@ -40,6 +40,11 @@ void main() async {
 // Subtext: Color(0xFF98A2B3)
 // SubSubtext: Color(0xFF667085)
 
+// Todos
+// Todo: Fix reactions. (when reacting, it is buggy. It is only correct when you leave the chat and reenter the chat)
+// Todo: Make reacting ui remember previous choices
+
+
 class MaioClient extends StatelessWidget {
   final Client client;
   const MaioClient({required this.client, Key? key}) : super(key: key);

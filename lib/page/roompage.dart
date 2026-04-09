@@ -160,6 +160,9 @@ class _RoomPageState extends State<RoomPage> {
                 scrollController: _scrollController,
                 ownUserId: room.client.userID ?? '',
                 resolveAvatarUrl: _resolveAvatarUrl,
+                onReacted: () {
+                  setState(() {});
+                },
               ),
             ),
             InputBar(
@@ -197,6 +200,7 @@ class _EventList extends StatelessWidget {
   final ScrollController scrollController;
   final String ownUserId;
   final Future<String?> Function(Event) resolveAvatarUrl;
+  final Function onReacted;
 
   const _EventList({
     required this.events,
@@ -205,6 +209,7 @@ class _EventList extends StatelessWidget {
     required this.scrollController,
     required this.ownUserId,
     required this.resolveAvatarUrl,
+    required this.onReacted
   });
 
   bool isVisibleInTimeline(Event e) {
@@ -253,97 +258,8 @@ class _EventList extends StatelessWidget {
           room: room,
           isOwn: isOwn,
           resolveAvatarUrl: resolveAvatarUrl,
+          onReacted: onReacted
         );
-
-        /*
-        switch (event.type) {
-          case "m.room.message":
-            // Normal message
-            break;
-          case "m.reaction":
-            // A reaction happended.
-            return const SizedBox.shrink();
-            break;
-          case "m.room.redaction":
-            // Something was deleted
-            return const SizedBox.shrink();
-            break;
-          case "m.room.member":
-            // User joins leaves kicks invites
-            // Todo: display somehow
-            return const SizedBox.shrink();
-            break;
-          case "m.room.create":
-            // Room was created
-            // Todo: display somehow
-            return const SizedBox.shrink();
-            break;
-          case "m.room.power_levels":
-            // Power level changed (e.g. from the user)
-            // Todo: display somehow
-            return const SizedBox.shrink();
-            break;
-          case "m.room.join_rules":
-            // Join rules updated
-            // Todo: display somehow
-            return const SizedBox.shrink();
-            break;
-          case "m.room.history_visibility":
-            // History visibility updated
-            // Todo: display somehow
-            return const SizedBox.shrink();
-            break;
-          case "m.room.guest_access":
-            // Guest access ??? Todo: figure this out
-            return const SizedBox.shrink();
-            break;
-          case "m.room.topic":
-            // Room topic updated
-            // Todo: display somehow
-            return const SizedBox.shrink();
-            break;
-          case "m.room.name":
-            // Room name updated
-            // Todo: display somehow
-            return const SizedBox.shrink();
-            break;
-          case "m.room.avatar":
-            // Room avatar updated
-            // Todo: display somehow
-            return const SizedBox.shrink();
-            break;
-          case "com.beeper.disappearing_timer":
-            // Todo: figure out what this is
-            // Todo: display somehow
-            return const SizedBox.shrink();
-            break;
-          case "com.beeper.room_features":
-            // Room features updated
-            // Todo: display somehow
-            return const SizedBox.shrink();
-            break;
-          case "m.bridge":
-            // Todo: figure this out
-            // Todo: display somehow
-            return const SizedBox.shrink();
-            break;
-          case "uk.half-shot.bridge":
-            // Todo: figure this out
-            // Todo: display somehow
-            return const SizedBox.shrink();
-            break;
-          case "io.element.functional_members":
-            // Todo: figure this out
-            // Todo: display somehow
-            return const SizedBox.shrink();
-            break;
-          default:
-            print(event.type.toString() + " can't be handled");
-            return const SizedBox.shrink();
-            break;
-        }
-
-         */
       },
     );
   }
@@ -359,6 +275,7 @@ class _MessageRow extends StatelessWidget {
   final Room room;
   final bool isOwn;
   final Future<String?> Function(Event) resolveAvatarUrl;
+  final Function onReacted;
 
   const _MessageRow({
     super.key,
@@ -367,6 +284,7 @@ class _MessageRow extends StatelessWidget {
     required this.room,
     required this.isOwn,
     required this.resolveAvatarUrl,
+    required this.onReacted
   });
 
   @override
@@ -377,6 +295,7 @@ class _MessageRow extends StatelessWidget {
         event: event,
         room: room,
         isOwn: isOwn,
+        onReacted: onReacted
       ),
     );
 
