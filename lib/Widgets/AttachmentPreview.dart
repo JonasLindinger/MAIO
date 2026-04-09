@@ -61,35 +61,38 @@ class AttachmentPreview extends StatelessWidget {
 
           return GestureDetector(
             onTap: () => _openFullscreenImage(context, uri),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(14),
-              child: Container(
-                color: const Color(0xFF0F141B),
-                constraints: const BoxConstraints(
-                  maxWidth: 320,
-                  maxHeight: 260,
-                  minHeight: 96,
-                  minWidth: 96,
+            child: Stack(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: Container(
+                    color: const Color(0xFF0F141B),
+                    constraints: const BoxConstraints(
+                      maxWidth: 320,
+                      maxHeight: 260,
+                      minHeight: 96,
+                      minWidth: 96,
+                    ),
+                    child: Image.network(
+                      _mediaUrlWithAccessToken(uri),
+                      fit: BoxFit.contain,
+                    ),
+                  ),
                 ),
-                child: Image.network(
-                  _mediaUrlWithAccessToken(uri),
-                  fit: BoxFit.contain,
-                  filterQuality: FilterQuality.high,
-                  errorBuilder: (context, error, stackTrace) {
-                    debugPrint('image load error: $error');
-                    return Container(
-                      height: 180,
-                      color: const Color(0xFF0F141B),
-                      child: const Center(
-                        child: Icon(
-                          Icons.broken_image_outlined,
-                          color: Colors.white70,
-                        ),
-                      ),
-                    );
-                  },
+
+                Positioned(
+                  bottom: 8,
+                  right: 8,
+                  child: Material(
+                    color: Colors.black54,
+                    shape: const CircleBorder(),
+                    child: IconButton(
+                      icon: const Icon(Icons.download, color: Colors.white),
+                      onPressed: () => _downloadMedia(context, uri, name),
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
           );
         },
@@ -104,21 +107,35 @@ class AttachmentPreview extends StatelessWidget {
 
           return GestureDetector(
             onTap: uri == null ? null : () => _openFullscreenVideo(context, uri),
-            child: Container(
-              width: double.infinity,
-              constraints: const BoxConstraints(minHeight: 180),
-              decoration: BoxDecoration(
-                color: const Color(0xFF0F141B),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: const Color(0xFF263041)),
-              ),
-              child: const Center(
-                child: Icon(
-                  Icons.play_circle_fill,
-                  size: 64,
-                  color: Colors.white70,
+            child: Stack(
+              children: [
+                Container(
+                  width: double.infinity,
+                  constraints: const BoxConstraints(minHeight: 180),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0F141B),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: const Center(
+                    child: Icon(Icons.play_circle_fill, size: 64, color: Colors.white70),
+                  ),
                 ),
-              ),
+
+                Positioned(
+                  bottom: 8,
+                  right: 8,
+                  child: Material(
+                    color: Colors.black54,
+                    shape: const CircleBorder(),
+                    child: IconButton(
+                      icon: const Icon(Icons.download, color: Colors.white),
+                      onPressed: uri == null
+                          ? null
+                          : () => _downloadMedia(context, uri, name),
+                    ),
+                  ),
+                ),
+              ],
             ),
           );
         },
@@ -194,6 +211,56 @@ class AttachmentPreview extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _downloadWithProgress(BuildContext context, Uri uri, String path) async {
+    final client = HttpClient();
+    final request = await client.getUrl(Uri.parse(_mediaUrlWithAccessToken(uri)));
+    final response = await request.close();
+
+    final file = File(path);
+    final sink = file.openWrite();
+
+    int received = 0;
+    final total = response.contentLength;
+
+    await for (final chunk in response) {
+      received += chunk.length;
+      sink.add(chunk);
+
+      debugPrint('Progress: ${(received / total * 100).toStringAsFixed(0)}%');
+    }
+
+    await sink.close();
+  }
+
+  Future<void> _downloadMedia(BuildContext context, Uri uri, String fileName,) async {
+    final messenger = ScaffoldMessenger.of(context);
+
+    try {
+      final savePath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save as',
+        fileName: fileName,
+      );
+
+      if (savePath == null) return;
+
+      await _downloadWithProgress(context, uri, savePath);
+
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Saved to $savePath'),
+          backgroundColor: const Color(0xFF1C2430),
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Download failed: $e'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+    }
   }
 
   Future<void> _openFullscreenImage(BuildContext context, Uri uri) async {

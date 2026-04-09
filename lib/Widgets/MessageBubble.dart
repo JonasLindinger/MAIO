@@ -21,8 +21,16 @@ class MessageBubble extends StatelessWidget {
     final body = event.getDisplayEvent(timeline).body.trim();
     if (body.isEmpty) return null;
 
-    if (event.hasAttachment && _isFileEvent(event)) {
-      return null;
+    if (!event.hasAttachment) return body;
+
+    // Only show if it's NOT just a filename
+    final mime = event.attachmentMimetype;
+
+    if (mime.startsWith('image/') || mime.startsWith('video/')) {
+      // Hide if body looks like a filename
+      if (body.contains('.') && body.length < 40) {
+        return null;
+      }
     }
 
     return body;
@@ -128,8 +136,7 @@ class MessageBubble extends StatelessWidget {
             ),
           ],
         ),
-        child: event.hasAttachment
-            ? Column(
+        child: event.hasAttachment ? Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -144,8 +151,7 @@ class MessageBubble extends StatelessWidget {
               FormattedMessage(text: body)
             ],
           ],
-        )
-            : FormattedMessage(text: body ?? ''),
+        ) : FormattedMessage(text: body ?? ''),
       ),
     );
   }
