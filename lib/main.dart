@@ -28,6 +28,13 @@ void main() async {
   runApp(MaioClient(client: client));
 }
 
+// Colors:
+// Background: const Color(0xFF0B0F14)
+// Accent: const Color(0xFF4C8DF6)
+// Text: Color(0xFFF2F4F7)
+// Subtext: Color(0xFF98A2B3)
+// SubSubtext: Color(0xFF667085)
+
 class MaioClient extends StatelessWidget {
   final Client client;
   const MaioClient({required this.client, Key? key}) : super(key: key);
