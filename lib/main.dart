@@ -1,19 +1,23 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:maio/page/loginpage.dart';
 import 'package:maio/page/roomlistpage.dart';
 import 'package:matrix/matrix.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  sqfliteFfiInit();
-  databaseFactory = databaseFactoryFfi;
+  // ✅ Only use FFI on desktop
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
 
   final dbDirectory = await getApplicationSupportDirectory();
-
   final dbPath = '${dbDirectory.path}/database.sqlite';
 
   final client = Client(
@@ -25,6 +29,7 @@ void main() async {
   );
 
   await client.init();
+
   runApp(MaioClient(client: client));
 }
 
