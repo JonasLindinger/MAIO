@@ -2,9 +2,9 @@ import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:flutter/foundation.dart' as foundation;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:maio/Widgets/FormattedMessage.dart';
+import 'package:maio/Widgets/formatted_message.dart';
 import 'package:matrix/matrix.dart';
-import 'AttachmentPreview.dart';
+import 'attachment_preview.dart';
 
 class MessageBubble extends StatefulWidget {
   final Timeline timeline;

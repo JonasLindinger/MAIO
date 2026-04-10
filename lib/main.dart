@@ -37,6 +37,10 @@ void main() async {
   runApp(MaioClient(client: client));
 }
 
+
+
+// ── Theme ────────────────────────────────────────────────────────────────────
+
 // Colors:
 // Background: const Color(0xFF0B0F14)
 // Accent: const Color(0xFF4C8DF6)
@@ -44,10 +48,23 @@ void main() async {
 // Subtext: Color(0xFF98A2B3)
 // SubSubtext: Color(0xFF667085)
 
+class AppTheme {
+  static const bg = Color(0xFF0C0F14);
+  static const surface = Color(0xFF131820);
+  static const surfaceRaised = Color(0xFF1A2030);
+  static const border = Color(0xFF1E2736);
+  static const borderLight = Color(0xFF2A3548);
+  static const blue = Color(0xFF4C8DF6);
+  static const green = Color(0xFF34C759);
+  static const red = Color(0xFFFF453A);
+  static const textPrimary = Color(0xFFEDF1F7);
+  static const textSecondary = Color(0xFF8A95A8);
+  static const textMuted = Color(0xFF4A5568);
+}
+
 // Todos
 // Todo: Fix reactions. (when reacting, it is buggy. It is only correct when you leave the chat and reenter the chat)
 // Todo: Make reacting ui remember previous choices
-
 
 class MaioClient extends StatelessWidget {
   final Client client;

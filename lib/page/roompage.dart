@@ -1,7 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:maio/Widgets/InputBar.dart';
-import 'package:maio/Widgets/MessageBubble.dart';
+import 'package:maio/widgets/chat/input_bar.dart';
+import 'package:maio/widgets/chat/message_bubble.dart';
 import 'package:matrix/matrix.dart';
 
 class RoomPage extends StatefulWidget {
