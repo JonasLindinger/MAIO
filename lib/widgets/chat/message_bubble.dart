@@ -2,9 +2,9 @@ import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:flutter/foundation.dart' as foundation;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:maio/Widgets/formatted_message.dart';
 import 'package:matrix/matrix.dart';
 import 'attachment_preview.dart';
+import 'formatted_message.dart';
 
 class MessageBubble extends StatefulWidget {
   final Timeline timeline;
@@ -63,14 +63,26 @@ class _MessageBubbleState extends State<MessageBubble> {
     // Apply optimistic deltas
     _optimistic.forEach((emoji, delta) {
       final existing = map[emoji];
-      if (existing != null) {
-        final newCount = existing.count + delta;
-        map[emoji] = _ReactionData(
-          count: newCount < 0 ? 0 : newCount,
-          myEventId: existing.myEventId,
-        );
-      } else if (delta > 0) {
-        map[emoji] = _ReactionData(count: 1, myEventId: null);
+
+      if (delta < 0) {
+        map.remove(emoji);
+        return;
+      }
+
+      if (delta > 0) {
+        final alreadyMine = existing?.myEventId != null;
+
+        // Only add if *I* haven't reacted yet
+        if (!alreadyMine) {
+          if (existing != null) {
+            map[emoji] = _ReactionData(
+              count: existing.count + 1,
+              myEventId: existing.myEventId,
+            );
+          } else {
+            map[emoji] = _ReactionData(count: 1, myEventId: null);
+          }
+        }
       }
     });
 
@@ -81,10 +93,31 @@ class _MessageBubbleState extends State<MessageBubble> {
 
   Future<void> _react(String emoji) async {
     final reactions = _reactions();
-    final existing = reactions[emoji];
     final ownId = widget.room.client.userID ?? '';
 
-    // Check if user already reacted with this emoji
+    // Determine if I have reacted (INCLUDING optimistic state)
+    final hasReacted = (() {
+      // Check real reactions
+      for (final e in widget.timeline.events) {
+        if (e.type == EventTypes.Reaction &&
+            e.relationshipEventId == widget.event.eventId &&
+            e.senderId == ownId) {
+          final key = e.content
+              .tryGetMap<String, dynamic>('m.relates_to')
+              ?.tryGet<String>('key');
+          if (key == emoji) return true;
+        }
+      }
+
+      // Check optimistic override
+      final delta = _optimistic[emoji] ?? 0;
+      if (delta > 0) return true;
+      if (delta < 0) return false;
+
+      return false;
+    })();
+
+    // Find actual reaction event (only needed for unreact)
     Event? myReactionEvent;
     for (final e in widget.timeline.events) {
       if (e.type == EventTypes.Reaction &&
@@ -100,26 +133,79 @@ class _MessageBubbleState extends State<MessageBubble> {
       }
     }
 
-    if (myReactionEvent != null) {
-      // Unreact — redact the reaction event
-      setState(() => _optimistic[emoji] = (_optimistic[emoji] ?? 0) - 1);
+    if (hasReacted) {
+      // UNREACT
+      setState(() => _optimistic[emoji] = -1);
+
       try {
-        await widget.room.redactEvent(myReactionEvent.eventId);
+        if (myReactionEvent != null) {
+          await widget.room.redactEvent(myReactionEvent.eventId);
+        }
+
+        // WAIT for sync to catch up
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (!mounted) return;
+          setState(() => _cleanupOptimistic());
+        });
+
       } catch (_) {
-        // Roll back
-        if (mounted) setState(() => _optimistic[emoji] = (_optimistic[emoji] ?? 0) + 1);
+        if (mounted) {
+          setState(() => _optimistic.remove(emoji));
+        }
       }
-    } else {
-      // Add reaction
-      setState(() => _optimistic[emoji] = (_optimistic[emoji] ?? 0) + 1);
+    }
+    else {
+      // REACT
+      setState(() => _optimistic[emoji] = 1);
+
       try {
         await widget.room.sendReaction(widget.event.eventId, emoji);
+
+        // WAIT for sync to catch up
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (!mounted) return;
+          setState(() => _cleanupOptimistic());
+        });
+
       } catch (_) {
-        if (mounted) setState(() => _optimistic[emoji] = (_optimistic[emoji] ?? 0) - 1);
+        if (mounted) {
+          setState(() => _optimistic.remove(emoji));
+        }
       }
     }
 
     widget.onReacted();
+  }
+
+  void _cleanupOptimistic() {
+    final ownId = widget.room.client.userID ?? '';
+
+    for (final emoji in _optimistic.keys.toList()) {
+      final delta = _optimistic[emoji]!;
+
+      bool existsOnServer = false;
+
+      for (final e in widget.timeline.events) {
+        if (e.type == EventTypes.Reaction &&
+            e.relationshipEventId == widget.event.eventId &&
+            e.senderId == ownId) {
+          final key = e.content
+              .tryGetMap<String, dynamic>('m.relates_to')
+              ?.tryGet<String>('key');
+
+          if (key == emoji) {
+            existsOnServer = true;
+            break;
+          }
+        }
+      }
+
+      // If server state matches what we wanted → cleanup
+      if ((delta > 0 && existsOnServer) ||
+          (delta < 0 && !existsOnServer)) {
+        _optimistic.remove(emoji);
+      }
+    }
   }
 
   void _showPicker() {
@@ -167,14 +253,15 @@ class _MessageBubbleState extends State<MessageBubble> {
 
   @override
   Widget build(BuildContext context) {
-    final bubbleColor =
-    widget.isOwn ? const Color(0xFF2E7DFF) : const Color(0xFF1C2430);
+    final bubbleColor = widget.isOwn ? const Color(0xFF2E7DFF) : const Color(0xFF1C2430);
     final body = _eventBody();
     final reactions = _reactions();
     final ownId = widget.room.client.userID ?? '';
 
     // Check which emojis the current user has reacted with
     final myReactions = <String>{};
+
+    // Real reactions from server
     for (final e in widget.timeline.events) {
       if (e.type == EventTypes.Reaction &&
           e.relationshipEventId == widget.event.eventId &&
@@ -185,6 +272,15 @@ class _MessageBubbleState extends State<MessageBubble> {
         if (key != null) myReactions.add(key);
       }
     }
+
+    // Apply optimistic changes
+    _optimistic.forEach((emoji, delta) {
+      if (delta > 0) {
+        myReactions.add(emoji);
+      } else if (delta < 0) {
+        myReactions.remove(emoji); // force removal
+      }
+    });
 
     final bubble = GestureDetector(
       onLongPress: _showPicker,

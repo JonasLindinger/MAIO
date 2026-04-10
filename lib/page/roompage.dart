@@ -1,8 +1,8 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:maio/widgets/chat/input_bar.dart';
-import 'package:maio/widgets/chat/message_bubble.dart';
 import 'package:matrix/matrix.dart';
+
+import '../widgets/chat/event_list.dart';
 
 class RoomPage extends StatefulWidget {
   final Room room;
@@ -67,29 +67,24 @@ class _RoomPageState extends State<RoomPage> {
 
   void _updateEvents() {
     if (!mounted || _timeline == null) return;
-    final next = _timeline!.events
-        .where((e) => e.relationshipEventId == null)
-        .toList(growable: false);
 
-    if (next.length == _events.length) {
-      bool same = true;
-      for (int i = 0; i < next.length; i++) {
-        if (next[i].eventId != _events[i].eventId ||
-            next[i].status != _events[i].status) {
-          same = false;
-          break;
-        }
-      }
-      if (same) return;
-    }
+    final next = List<Event>.from(_timeline!.events);
+
+    if (next.length == _events.length) return;
 
     setState(() => _events = next);
   }
 
   void _onScroll() {
     if (!_scrollController.hasClients || _isRequestingHistory) return;
-    if (_scrollController.position.pixels >=
-        _scrollController.position.maxScrollExtent - 300) {
+
+    final tl = _timeline;
+    if (tl == null || !tl.canRequestHistory) return;
+
+    final position = _scrollController.position;
+
+    // only trigger when near top in reverse list
+    if (position.pixels <= 300) {
       _fetchMoreHistory();
     }
   }
@@ -153,7 +148,7 @@ class _RoomPageState extends State<RoomPage> {
             Expanded(
               child: _timeline == null
                   ? const Center(child: CircularProgressIndicator.adaptive())
-                  : _EventList(
+                  : EventList(
                 events: _events,
                 timeline: _timeline!,
                 room: room,
@@ -161,7 +156,7 @@ class _RoomPageState extends State<RoomPage> {
                 ownUserId: room.client.userID ?? '',
                 resolveAvatarUrl: _resolveAvatarUrl,
                 onReacted: () {
-                  setState(() {});
+                  // setState(() {});
                 },
               ),
             ),
@@ -185,210 +180,6 @@ class _RoomPageState extends State<RoomPage> {
           ],
         ),
       ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// List
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _EventList extends StatelessWidget {
-  final List<Event> events;
-  final Timeline timeline;
-  final Room room;
-  final ScrollController scrollController;
-  final String ownUserId;
-  final Future<String?> Function(Event) resolveAvatarUrl;
-  final Function onReacted;
-
-  const _EventList({
-    required this.events,
-    required this.timeline,
-    required this.room,
-    required this.scrollController,
-    required this.ownUserId,
-    required this.resolveAvatarUrl,
-    required this.onReacted
-  });
-
-  bool isVisibleInTimeline(Event e) {
-    switch (e.type) {
-      case "m.room.message":
-        return true;
-
-      case "m.room.redaction":
-        return false;
-
-      case "m.reaction":
-        return false;
-
-      case "m.room.member":
-        return false;
-
-      case "m.room.name":
-        return false;
-      case "m.room.topic":
-        return false; // optional system info
-
-      default:
-        return false;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final visibleEvents = events.where(isVisibleInTimeline).toList();
-
-    return ListView.builder(
-      controller: scrollController,
-      reverse: true,
-      addAutomaticKeepAlives: false,
-      addRepaintBoundaries: true,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      itemCount: visibleEvents.length,
-      itemBuilder: (context, index) {
-        final event = visibleEvents[index];
-        final isOwn = event.senderId == ownUserId;
-
-        return _MessageRow(
-          key: ValueKey(event.eventId),
-          event: event,
-          timeline: timeline,
-          room: room,
-          isOwn: isOwn,
-          resolveAvatarUrl: resolveAvatarUrl,
-          onReacted: onReacted
-        );
-      },
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Row
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _MessageRow extends StatelessWidget {
-  final Event event;
-  final Timeline timeline;
-  final Room room;
-  final bool isOwn;
-  final Future<String?> Function(Event) resolveAvatarUrl;
-  final Function onReacted;
-
-  const _MessageRow({
-    super.key,
-    required this.event,
-    required this.timeline,
-    required this.room,
-    required this.isOwn,
-    required this.resolveAvatarUrl,
-    required this.onReacted
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final bubble = RepaintBoundary(
-      child: MessageBubble(
-        timeline: timeline,
-        event: event,
-        room: room,
-        isOwn: isOwn,
-        onReacted: onReacted
-      ),
-    );
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
-        mainAxisAlignment:
-        isOwn ? MainAxisAlignment.end : MainAxisAlignment.start,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          if (!isOwn) ...[
-            _AvatarWidget(event: event, resolveAvatarUrl: resolveAvatarUrl),
-            const SizedBox(width: 8),
-          ],
-          Flexible(
-            child: Column(
-              crossAxisAlignment:
-              isOwn ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (!isOwn)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 4, bottom: 2),
-                    child: Text(
-                      event.senderFromMemoryOrFallback.calcDisplayname(),
-                      style: const TextStyle(
-                        color: Color(0xFF9AA4B2),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                event.status.isSent
-                    ? bubble
-                    : Opacity(opacity: 0.55, child: bubble),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Avatar — resolves once via parent cache, then CachedNetworkImage handles disk
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _AvatarWidget extends StatefulWidget {
-  final Event event;
-  final Future<String?> Function(Event) resolveAvatarUrl;
-
-  const _AvatarWidget({required this.event, required this.resolveAvatarUrl});
-
-  @override
-  State<_AvatarWidget> createState() => _AvatarWidgetState();
-}
-
-class _AvatarWidgetState extends State<_AvatarWidget> {
-  String? _url;
-  bool _resolved = false;
-
-  static const _placeholder = CircleAvatar(
-    radius: 18,
-    backgroundColor: Color(0xFF2A3441),
-    child: Icon(Icons.person_outline, size: 18, color: Colors.white70),
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    widget.resolveAvatarUrl(widget.event).then((url) {
-      if (mounted) setState(() { _url = url; _resolved = true; });
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!_resolved || _url == null || _url!.isEmpty) return _placeholder;
-
-    return CachedNetworkImage(
-      imageUrl: _url!,
-      memCacheWidth: 72,
-      memCacheHeight: 72,
-      imageBuilder: (_, img) => CircleAvatar(
-        radius: 18,
-        backgroundImage: img,
-        backgroundColor: const Color(0xFF2A3441),
-      ),
-      placeholder: (_, __) => _placeholder,
-      errorWidget: (_, __, ___) => _placeholder,
-      width: 36,
-      height: 36,
     );
   }
 }
