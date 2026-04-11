@@ -46,6 +46,7 @@ dependencies:
   cached_network_image: ^3.4.1
   open_filex: ^4.7.0
   emoji_picker_flutter: ^4.4.0
+  flutter_local_notifications: ^21.0.0
 
 dev_dependencies:
   flutter_test:

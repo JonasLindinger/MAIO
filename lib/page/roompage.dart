@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:maio/utils/notification_manager.dart';
 import 'package:maio/widgets/chat/input_bar.dart';
 import 'package:matrix/matrix.dart';
 
@@ -31,6 +32,7 @@ class _RoomPageState extends State<RoomPage> {
   @override
   void initState() {
     super.initState();
+    NotificationManager.currentRoomId = widget.room.id;
     _timelineFuture = widget.room.getTimeline(
       onChange: (_) => _updateEvents(),
       onInsert: (_) => _updateEvents(),
@@ -56,6 +58,7 @@ class _RoomPageState extends State<RoomPage> {
 
   @override
   void dispose() {
+    NotificationManager.currentRoomId = null;
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _sendController.dispose();

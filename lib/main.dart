@@ -3,16 +3,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vodozemac;
 import 'package:maio/page/loginpage.dart';
 import 'package:maio/page/roomlistpage.dart';
+import 'package:maio/utils/notification_manager.dart';
 import 'package:matrix/encryption/utils/key_verification.dart';
 import 'package:matrix/matrix.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
-import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await vodozemac.init();
+  await NotificationManager.initialize();
 
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     sqfliteFfiInit();
@@ -34,19 +35,22 @@ void main() async {
   );
 
   await client.init();
+
+  client.onTimelineEvent.stream.listen((Event event) {
+    if (event.status != EventStatus.sent && event.status != EventStatus.synced) return;
+    if (event.type != EventTypes.Message) return;
+    final roomId = event.roomId;
+    if (roomId == null) return;
+    final room = client.getRoomById(roomId);
+    if (room != null) {
+      NotificationManager.showNotification(event, room);
+    }
+  });
+
   runApp(MaioClient(client: client));
 }
 
-
-
 // ── Theme ────────────────────────────────────────────────────────────────────
-
-// Colors:
-// Background: const Color(0xFF0B0F14)
-// Accent: const Color(0xFF4C8DF6)
-// Text: Color(0xFFF2F4F7)
-// Subtext: Color(0xFF98A2B3)
-// SubSubtext: Color(0xFF667085)
 
 class AppTheme {
   static const bg = Color(0xFF0C0F14);
@@ -62,18 +66,17 @@ class AppTheme {
   static const textMuted = Color(0xFF4A5568);
 }
 
-// Todos
-// Todo: Fix reactions. (when reacting, it is buggy. It is only correct when you leave the chat and reenter the chat)
-// Todo: Make reacting ui remember previous choices
-
 class MaioClient extends StatelessWidget {
   final Client client;
+  static final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
   const MaioClient({required this.client, Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Matrix Client',
+      navigatorKey: navigatorKey,
       builder: (context, child) => Provider<Client>(
         create: (context) => client,
         child: child,
