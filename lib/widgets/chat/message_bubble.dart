@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:flutter/foundation.dart' as foundation;
 import 'package:flutter/material.dart';
@@ -12,6 +13,7 @@ class MessageBubble extends StatefulWidget {
   final Room room;
   final bool isOwn;
   final Function onReacted;
+  final Function(Event)? onReply;
 
   const MessageBubble({
     super.key,
@@ -20,6 +22,7 @@ class MessageBubble extends StatefulWidget {
     required this.room,
     required this.isOwn,
     required this.onReacted,
+    this.onReply,
   });
 
   @override
@@ -27,8 +30,12 @@ class MessageBubble extends StatefulWidget {
 }
 
 class _MessageBubbleState extends State<MessageBubble> {
-  // Optimistic overlay: emoji -> delta (+1 or -1) applied before server confirms
+  // Optimistic map: emoji -> +1 (added) or -1 (removed)
   final Map<String, int> _optimistic = {};
+  double _dragOffset = 0;
+  bool _replyTriggered = false;
+
+  // ─── Helpers ───────────────────────────────────────────────────────────────
 
   String? _eventBody() {
     final body = widget.event.getDisplayEvent(widget.timeline).body.trim();
@@ -39,251 +46,192 @@ class _MessageBubbleState extends State<MessageBubble> {
     return null;
   }
 
-  // Reactions from the timeline, merged with optimistic deltas
+  Event? _replyToEvent() {
+    final relatesTo =
+    widget.event.content.tryGetMap<String, dynamic>('m.relates_to');
+    if (relatesTo == null) return null;
+    final inReplyTo =
+    relatesTo.tryGetMap<String, dynamic>('m.in_reply_to');
+    final replyEventId = inReplyTo?.tryGet<String>('event_id');
+    if (replyEventId == null) return null;
+    try {
+      return widget.timeline.events
+          .firstWhere((e) => e.eventId == replyEventId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ─── Reactions ─────────────────────────────────────────────────────────────
+
+  /// Builds the current reaction state from the timeline, applying any
+  /// in-flight optimistic deltas on top.
   Map<String, _ReactionData> _reactions() {
     final ownId = widget.room.client.userID ?? '';
-    // Map: emoji -> {count, myReactionEventId}
-    final map = <String, _ReactionData>{};
+
+    // Collect reactions, tracking which server-side event covers each
+    // (userId, emoji) pair so we can redact it on unreact.
+    final map = <String, Set<String>>{};
 
     for (final e in widget.timeline.events) {
-      if (e.type == EventTypes.Reaction &&
-          e.relationshipEventId == widget.event.eventId) {
-        final key = e.content
-            .tryGetMap<String, dynamic>('m.relates_to')
-            ?.tryGet<String>('key');
-        if (key == null) continue;
-        final existing = map[key] ?? _ReactionData(count: 0, myEventId: null);
-        map[key] = _ReactionData(
-          count: existing.count + 1,
-          myEventId: e.senderId == ownId ? e.eventId : existing.myEventId,
-        );
-      }
+      if (e.type != EventTypes.Reaction) continue;
+      if (e.relationshipEventId != widget.event.eventId) continue;
+
+      final key = e.content
+          .tryGetMap<String, dynamic>('m.relates_to')
+          ?.tryGet<String>('key');
+      if (key == null) continue;
+
+      map.putIfAbsent(key, () => {});
+      map[key]!.add(e.senderId);
     }
 
     // Apply optimistic deltas
     _optimistic.forEach((emoji, delta) {
-      final existing = map[emoji];
-
-      if (delta < 0) {
-        map.remove(emoji);
-        return;
-      }
-
+      map.putIfAbsent(emoji, () => {});
       if (delta > 0) {
-        final alreadyMine = existing?.myEventId != null;
-
-        // Only add if *I* haven't reacted yet
-        if (!alreadyMine) {
-          if (existing != null) {
-            map[emoji] = _ReactionData(
-              count: existing.count + 1,
-              myEventId: existing.myEventId,
-            );
-          } else {
-            map[emoji] = _ReactionData(count: 1, myEventId: null);
-          }
-        }
+        map[emoji]!.add(ownId);
+      } else {
+        map[emoji]!.remove(ownId);
       }
+      if (map[emoji]!.isEmpty) map.remove(emoji);
     });
 
-    // Remove zeros
-    map.removeWhere((_, v) => v.count <= 0);
-    return map;
+    return map.map((k, v) => MapEntry(k, _ReactionData(users: v)));
   }
 
   Future<void> _react(String emoji) async {
-    final reactions = _reactions();
     final ownId = widget.room.client.userID ?? '';
+    final currentReactions = _reactions();
+    final isMine = currentReactions[emoji]?.users.contains(ownId) ?? false;
 
-    // Determine if I have reacted (INCLUDING optimistic state)
-    final hasReacted = (() {
-      // Check real reactions
-      for (final e in widget.timeline.events) {
-        if (e.type == EventTypes.Reaction &&
-            e.relationshipEventId == widget.event.eventId &&
-            e.senderId == ownId) {
-          final key = e.content
-              .tryGetMap<String, dynamic>('m.relates_to')
-              ?.tryGet<String>('key');
-          if (key == emoji) return true;
-        }
-      }
+    // Apply optimistic update immediately so the UI reflects the change
+    // without waiting for the server round-trip.
+    setState(() => _optimistic[emoji] = isMine ? -1 : 1);
 
-      // Check optimistic override
-      final delta = _optimistic[emoji] ?? 0;
-      if (delta > 0) return true;
-      if (delta < 0) return false;
-
-      return false;
-    })();
-
-    // Find actual reaction event (only needed for unreact)
-    Event? myReactionEvent;
-    for (final e in widget.timeline.events) {
-      if (e.type == EventTypes.Reaction &&
-          e.relationshipEventId == widget.event.eventId &&
-          e.senderId == ownId) {
-        final key = e.content
-            .tryGetMap<String, dynamic>('m.relates_to')
-            ?.tryGet<String>('key');
-        if (key == emoji) {
-          myReactionEvent = e;
-          break;
-        }
-      }
-    }
-
-    if (hasReacted) {
-      // UNREACT
-      setState(() => _optimistic[emoji] = -1);
-
-      try {
-        if (myReactionEvent != null) {
-          await widget.room.redactEvent(myReactionEvent.eventId);
-        }
-
-        // WAIT for sync to catch up
-        Future.delayed(const Duration(milliseconds: 300), () {
-          if (!mounted) return;
-          setState(() => _cleanupOptimistic());
-        });
-
-      } catch (_) {
-        if (mounted) {
-          setState(() => _optimistic.remove(emoji));
-        }
-      }
-    }
-    else {
-      // REACT
-      setState(() => _optimistic[emoji] = 1);
-
-      try {
-        await widget.room.sendReaction(widget.event.eventId, emoji);
-
-        // WAIT for sync to catch up
-        Future.delayed(const Duration(milliseconds: 300), () {
-          if (!mounted) return;
-          setState(() => _cleanupOptimistic());
-        });
-
-      } catch (_) {
-        if (mounted) {
-          setState(() => _optimistic.remove(emoji));
-        }
-      }
-    }
-
-    widget.onReacted();
-  }
-
-  void _cleanupOptimistic() {
-    final ownId = widget.room.client.userID ?? '';
-
-    for (final emoji in _optimistic.keys.toList()) {
-      final delta = _optimistic[emoji]!;
-
-      bool existsOnServer = false;
-
-      for (final e in widget.timeline.events) {
-        if (e.type == EventTypes.Reaction &&
-            e.relationshipEventId == widget.event.eventId &&
-            e.senderId == ownId) {
-          final key = e.content
-              .tryGetMap<String, dynamic>('m.relates_to')
-              ?.tryGet<String>('key');
-
-          if (key == emoji) {
-            existsOnServer = true;
-            break;
+    try {
+      if (isMine) {
+        // Find the reaction event that belongs to us and redact it.
+        for (final e in widget.timeline.events) {
+          if (e.type == EventTypes.Reaction &&
+              e.relationshipEventId == widget.event.eventId &&
+              e.senderId == ownId) {
+            final key = e.content
+                .tryGetMap<String, dynamic>('m.relates_to')
+                ?.tryGet<String>('key');
+            if (key == emoji) {
+              await widget.room.redactEvent(e.eventId);
+              break;
+            }
           }
         }
+      } else {
+        await widget.room.sendReaction(widget.event.eventId, emoji);
       }
-
-      // If server state matches what we wanted → cleanup
-      if ((delta > 0 && existsOnServer) ||
-          (delta < 0 && !existsOnServer)) {
-        _optimistic.remove(emoji);
+    } catch (_) {
+      // Revert optimistic on failure
+      if (mounted) {
+        setState(() => _optimistic.remove(emoji));
       }
+    } finally {
+      // Once the timeline updates via onChange/onInsert the real state will
+      // supersede the optimistic entry; clear it so we don't double-count.
+      if (mounted) {
+        setState(() => _optimistic.remove(emoji));
+      }
+      widget.onReacted();
     }
   }
 
-  void _showPicker() {
+  // ─── UI actions ────────────────────────────────────────────────────────────
+
+  void _showContextMenu() {
     HapticFeedback.mediumImpact();
     showModalBottomSheet<void>(
       context: context,
-      isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => EmojiPicker(
-        onEmojiSelected: (Category? category, Emoji emoji) {
-          // Do something when emoji is tapped (optional)
+      isScrollControlled: true,
+      builder: (_) => _ContextMenuSheet(
+        onReply: widget.onReply != null
+            ? () {
           Navigator.pop(context);
-          _react(emoji.emoji);
+          widget.onReply!(widget.event);
+        }
+            : null,
+        onReact: () {
+          Navigator.pop(context);
+          _showEmojiPicker();
         },
-        onBackspacePressed: () {
-          // Do something when the user taps the backspace button (optional)
-          // Set it to null to hide the Backspace-Button
-        },
-        config: Config(
-          height: 256,
-          emojiTextStyle: TextStyle(
-            backgroundColor: const Color(0xFFF2F2F2)
-          ),
-          checkPlatformCompatibility: true,
-          emojiViewConfig: EmojiViewConfig(
-            // Issue: https://github.com/flutter/flutter/issues/28894
-            emojiSizeMax: 28 *
-                (foundation.defaultTargetPlatform == TargetPlatform.iOS
-                    ?  1.20
-                    :  1.0),
-          ),
-          viewOrderConfig: const ViewOrderConfig(
-            top: EmojiPickerItem.categoryBar,
-            middle: EmojiPickerItem.emojiView,
-            bottom: EmojiPickerItem.searchBar,
-          ),
-          skinToneConfig: const SkinToneConfig(),
-          categoryViewConfig: const CategoryViewConfig(),
-          bottomActionBarConfig: const BottomActionBarConfig(),
-          searchViewConfig: const SearchViewConfig(),
-        ),
-      )
+      ),
     );
   }
 
+  void _showEmojiPicker() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _EmojiSheet(
+        onPick: (emoji) {
+          Navigator.pop(context);
+          _react(emoji);
+        },
+      ),
+    );
+  }
+
+  /// Shows who reacted with [emoji] as a bottom sheet (not a dialog).
+  void _showReactionDetail(String emoji, _ReactionData data) {
+    HapticFeedback.lightImpact();
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _ReactionDetailSheet(
+        emoji: emoji,
+        data: data,
+        room: widget.room,
+      ),
+    );
+  }
+
+  // ─── Swipe to reply ────────────────────────────────────────────────────────
+
+  void _onDragUpdate(DragUpdateDetails d) {
+    if (widget.onReply == null) return;
+    // Own messages swipe left (negative dx), others swipe right (positive dx).
+    final delta = widget.isOwn ? -d.delta.dx : d.delta.dx;
+    if (delta < 0) return;
+    setState(() {
+      _dragOffset = (_dragOffset + delta).clamp(0.0, 72.0);
+    });
+    if (_dragOffset >= 64 && !_replyTriggered) {
+      _replyTriggered = true;
+      HapticFeedback.mediumImpact();
+    }
+  }
+
+  void _onDragEnd(DragEndDetails _) {
+    if (_replyTriggered) widget.onReply?.call(widget.event);
+    setState(() {
+      _dragOffset = 0;
+      _replyTriggered = false;
+    });
+  }
+
+  // ─── Build ─────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
-    final bubbleColor = widget.isOwn ? const Color(0xFF2E7DFF) : const Color(0xFF1C2430);
+    final bubbleColor =
+    widget.isOwn ? const Color(0xFF2E7DFF) : const Color(0xFF1C2430);
     final body = _eventBody();
     final reactions = _reactions();
     final ownId = widget.room.client.userID ?? '';
-
-    // Check which emojis the current user has reacted with
-    final myReactions = <String>{};
-
-    // Real reactions from server
-    for (final e in widget.timeline.events) {
-      if (e.type == EventTypes.Reaction &&
-          e.relationshipEventId == widget.event.eventId &&
-          e.senderId == ownId) {
-        final key = e.content
-            .tryGetMap<String, dynamic>('m.relates_to')
-            ?.tryGet<String>('key');
-        if (key != null) myReactions.add(key);
-      }
-    }
-
-    // Apply optimistic changes
-    _optimistic.forEach((emoji, delta) {
-      if (delta > 0) {
-        myReactions.add(emoji);
-      } else if (delta < 0) {
-        myReactions.remove(emoji); // force removal
-      }
-    });
+    final replyEvent = _replyToEvent();
 
     final bubble = GestureDetector(
-      onLongPress: _showPicker,
+      onLongPress: _showContextMenu,
       child: Container(
         constraints: const BoxConstraints(maxWidth: 320),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -297,83 +245,127 @@ class _MessageBubbleState extends State<MessageBubble> {
           ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.18),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
+              color: Colors.black.withOpacity(0.15),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
             ),
           ],
         ),
-        child: widget.event.hasAttachment
-            ? Column(
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            AttachmentPreview(
-              timeline: widget.timeline,
-              room: widget.room,
-              event: widget.event,
-              isOwn: widget.isOwn,
-            ),
-            if (body != null && body.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              FormattedMessage(text: body),
-            ],
+            if (replyEvent != null)
+              _ReplyPreview(event: replyEvent, isOwn: widget.isOwn),
+            if (widget.event.hasAttachment) ...[
+              AttachmentPreview(
+                timeline: widget.timeline,
+                room: widget.room,
+                event: widget.event,
+                isOwn: widget.isOwn,
+              ),
+              if (body != null && body.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                FormattedMessage(text: body),
+              ],
+            ] else
+              FormattedMessage(text: body ?? ''),
           ],
-        )
-            : FormattedMessage(text: body ?? ''),
+        ),
       ),
     );
 
-    if (reactions.isEmpty) return bubble;
+    // Reply hint icon that fades/scales in as the user drags.
+    final replyHint = AnimatedOpacity(
+      opacity: (_dragOffset / 64).clamp(0.0, 1.0),
+      duration: Duration.zero,
+      child: Transform.scale(
+        scale: (_dragOffset / 64).clamp(0.4, 1.0),
+        child: Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.15),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(Icons.reply, color: Colors.white70, size: 18),
+        ),
+      ),
+    );
+
+    final swipeable = GestureDetector(
+      onHorizontalDragUpdate: _onDragUpdate,
+      onHorizontalDragEnd: _onDragEnd,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          if (!widget.isOwn)
+            Positioned(
+                left: -40, top: 0, bottom: 0, child: Center(child: replyHint)),
+          if (widget.isOwn)
+            Positioned(
+                right: -40,
+                top: 0,
+                bottom: 0,
+                child: Center(child: replyHint)),
+          Transform.translate(
+            offset: Offset(widget.isOwn ? -_dragOffset : _dragOffset, 0),
+            child: bubble,
+          ),
+        ],
+      ),
+    );
+
+    if (reactions.isEmpty) return swipeable;
 
     return Column(
-      crossAxisAlignment: widget.isOwn
-          ? CrossAxisAlignment.end
-          : CrossAxisAlignment.start,
+      crossAxisAlignment:
+      widget.isOwn ? CrossAxisAlignment.end : CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        bubble,
+        swipeable,
         const SizedBox(height: 4),
-        // Reactions aligned flush with the bubble edge
         ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 320),
           child: Wrap(
             spacing: 5,
             runSpacing: 5,
-            alignment: WrapAlignment.start,
             children: reactions.entries.map((entry) {
-              final isMine = myReactions.contains(entry.key);
+              final isMine = entry.value.users.contains(ownId);
               return GestureDetector(
                 onTap: () => _react(entry.key),
+                onLongPress: () =>
+                    _showReactionDetail(entry.key, entry.value),
                 child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 150),
-                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                  duration: const Duration(milliseconds: 140),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 9, vertical: 5),
                   decoration: BoxDecoration(
                     color: isMine
-                        ? const Color(0xFF2E7DFF).withOpacity(0.22)
+                        ? const Color(0xFF2E7DFF).withOpacity(0.2)
                         : const Color(0xFF1C2430),
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(
                       color: isMine
-                          ? const Color(0xFF2E7DFF).withOpacity(0.7)
+                          ? const Color(0xFF2E7DFF).withOpacity(0.65)
                           : const Color(0xFF2E3D52),
-                      width: 1,
                     ),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(entry.key,
-                          style: const TextStyle(fontSize: 15, height: 1.1)),
-                      const SizedBox(width: 4),
+                          style:
+                          const TextStyle(fontSize: 15, height: 1.1)),
+                      const SizedBox(width: 5),
                       Text(
                         '${entry.value.count}',
                         style: TextStyle(
                           fontSize: 12,
+                          fontWeight: FontWeight.w600,
                           color: isMine
                               ? const Color(0xFF8BBFFF)
                               : const Color(0xFF9AA4B2),
-                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ],
@@ -388,8 +380,407 @@ class _MessageBubbleState extends State<MessageBubble> {
   }
 }
 
+// ─── Reply preview (inside the bubble) ───────────────────────────────────────
+
+class _ReplyPreview extends StatelessWidget {
+  final Event event;
+  final bool isOwn;
+
+  const _ReplyPreview({required this.event, required this.isOwn});
+
+  @override
+  Widget build(BuildContext context) {
+    final name = event.senderFromMemoryOrFallback.calcDisplayname();
+    final body = event.body.trim();
+    final preview = event.hasAttachment
+        ? '📎 Attachment'
+        : (body.length > 80 ? '${body.substring(0, 80)}…' : body);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(10),
+        border: Border(
+          left: BorderSide(
+            color: isOwn
+                ? Colors.white.withOpacity(0.6)
+                : const Color(0xFF4C8DF6),
+            width: 3,
+          ),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            name,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color:
+              isOwn ? Colors.white.withOpacity(0.85) : const Color(0xFF4C8DF6),
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            preview,
+            style:
+            TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.65)),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Context menu bottom sheet ────────────────────────────────────────────────
+
+class _ContextMenuSheet extends StatelessWidget {
+  final VoidCallback? onReply;
+  final VoidCallback onReact;
+
+  const _ContextMenuSheet({this.onReply, required this.onReact});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF13181F),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 10),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: const Color(0xFF3A4352),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 8),
+            if (onReply != null)
+              _MenuItem(
+                  icon: Icons.reply_rounded, label: 'Reply', onTap: onReply!),
+            _MenuItem(
+                icon: Icons.add_reaction_outlined,
+                label: 'React',
+                onTap: onReact),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MenuItem extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  const _MenuItem(
+      {required this.icon, required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        child: Row(
+          children: [
+            Icon(icon, color: const Color(0xFFF2F4F7), size: 22),
+            const SizedBox(width: 16),
+            Text(label,
+                style: const TextStyle(
+                    color: Color(0xFFF2F4F7),
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Emoji picker bottom sheet ────────────────────────────────────────────────
+
+class _EmojiSheet extends StatelessWidget {
+  final void Function(String) onPick;
+  const _EmojiSheet({required this.onPick});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 320,
+      child: ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        child: EmojiPicker(
+          onEmojiSelected: (_, emoji) => onPick(emoji.emoji),
+          config: Config(
+            height: 320,
+            checkPlatformCompatibility: true,
+            emojiViewConfig: EmojiViewConfig(
+              emojiSizeMax: 28 *
+                  (foundation.defaultTargetPlatform == TargetPlatform.iOS
+                      ? 1.20
+                      : 1.0),
+              backgroundColor: const Color(0xFF13181F),
+            ),
+            viewOrderConfig: const ViewOrderConfig(
+              top: EmojiPickerItem.categoryBar,
+              middle: EmojiPickerItem.emojiView,
+              bottom: EmojiPickerItem.searchBar,
+            ),
+            categoryViewConfig: const CategoryViewConfig(
+              backgroundColor: Color(0xFF13181F),
+              iconColorSelected: Color(0xFF4C8DF6),
+              indicatorColor: Color(0xFF4C8DF6),
+            ),
+            searchViewConfig: SearchViewConfig(
+              backgroundColor: const Color(0xFF13181F),
+              buttonIconColor: const Color(0xFF4C8DF6),
+            ),
+            bottomActionBarConfig: const BottomActionBarConfig(
+              backgroundColor: Color(0xFF13181F),
+              buttonIconColor: const Color(0xFF9AA4B2),
+            ),
+            skinToneConfig: const SkinToneConfig(),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Reaction detail bottom sheet ────────────────────────────────────────────
+// Replaces the old Dialog so it feels consistent with the rest of the UI.
+
+class _ReactionDetailSheet extends StatefulWidget {
+  final String emoji;
+  final _ReactionData data;
+  final Room room;
+
+  const _ReactionDetailSheet({
+    required this.emoji,
+    required this.data,
+    required this.room,
+  });
+
+  @override
+  State<_ReactionDetailSheet> createState() => _ReactionDetailSheetState();
+}
+
+class _ReactionDetailSheetState extends State<_ReactionDetailSheet> {
+  final Map<String, String> _names = {};
+  final Map<String, String?> _avatarUrls = {};
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveMembers();
+  }
+
+  Future<void> _resolveMembers() async {
+    final room = widget.room;
+    final client = room.client;
+    final memberStates = room.states['m.room.member'] ?? <String, Event>{};
+
+    for (final userId in widget.data.users) {
+      final stateEvent = memberStates[userId];
+
+      _names[userId] =
+          stateEvent?.content.tryGet<String>('displayname') ??
+              userId.split(':').first.replaceFirst('@', '');
+
+      final avatarMxc = stateEvent?.content.tryGet<String>('avatar_url');
+      if (avatarMxc != null && avatarMxc.startsWith('mxc://')) {
+        try {
+          final mxcUri = Uri.parse(avatarMxc);
+          final thumbUri =
+          await mxcUri.getThumbnailUri(client, width: 48, height: 48);
+          final token = client.accessToken ?? '';
+          final sep = thumbUri.query.isEmpty ? '?' : '&';
+          _avatarUrls[userId] = token.isEmpty
+              ? thumbUri.toString()
+              : '$thumbUri${sep}access_token=$token';
+        } catch (_) {
+          _avatarUrls[userId] = null;
+        }
+      } else {
+        _avatarUrls[userId] = null;
+      }
+    }
+
+    if (mounted) setState(() => _loading = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final userIds = widget.data.users.toList();
+    final ownId = widget.room.client.userID ?? '';
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF13181F),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // ── Handle bar ──
+            const SizedBox(height: 10),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: const Color(0xFF3A4352),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // ── Header ──
+            Text(widget.emoji, style: const TextStyle(fontSize: 36)),
+            const SizedBox(height: 4),
+            Text(
+              '${widget.data.count} '
+                  '${widget.data.count == 1 ? 'reaction' : 'reactions'}',
+              style: const TextStyle(color: Color(0xFF9AA4B2), fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+
+            const Divider(color: Color(0xFF1D2530), height: 1),
+
+            // ── User list ──
+            if (_loading)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 24),
+                child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+              )
+            else
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(context).size.height * 0.45,
+                ),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemCount: userIds.length,
+                  separatorBuilder: (_, __) =>
+                  const Divider(color: Color(0xFF1D2530), height: 1),
+                  itemBuilder: (_, i) {
+                    final userId = userIds[i];
+                    final name = _names[userId] ?? userId;
+                    final avatarUrl = _avatarUrls[userId];
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 10),
+                      child: Row(
+                        children: [
+                          _Avatar(
+                            userId: userId,
+                            name: name,
+                            avatarUrl: avatarUrl,
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Text(
+                              name,
+                              style: const TextStyle(
+                                  color: Color(0xFFF2F4F7),
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w500),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (userId == ownId)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF2E7DFF).withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Text('You',
+                                  style: TextStyle(
+                                      color: Color(0xFF4C8DF6),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600)),
+                            ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Avatar extends StatelessWidget {
+  final String userId;
+  final String name;
+  final String? avatarUrl;
+
+  const _Avatar({
+    required this.userId,
+    required this.name,
+    required this.avatarUrl,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final initials = name.isNotEmpty ? name[0].toUpperCase() : '?';
+    final fallback = CircleAvatar(
+      radius: 18,
+      backgroundColor: const Color(0xFF2A3441),
+      child: Text(initials,
+          style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 14,
+              fontWeight: FontWeight.w600)),
+    );
+
+    if (avatarUrl == null) return fallback;
+
+    return CachedNetworkImage(
+      imageUrl: avatarUrl!,
+      imageBuilder: (_, img) => CircleAvatar(
+        radius: 18,
+        backgroundImage: img,
+        backgroundColor: const Color(0xFF2A3441),
+      ),
+      placeholder: (_, __) => fallback,
+      errorWidget: (_, __, ___) => fallback,
+      width: 36,
+      height: 36,
+    );
+  }
+}
+
+// ─── Data ─────────────────────────────────────────────────────────────────────
+
 class _ReactionData {
-  final int count;
-  final String? myEventId;
-  const _ReactionData({required this.count, required this.myEventId});
+  final Set<String> users;
+  const _ReactionData({required this.users});
+  int get count => users.length;
 }

@@ -19,11 +19,13 @@ class _RoomPageState extends State<RoomPage> {
   final FocusNode _composerFocusNode = FocusNode();
 
   Timeline? _timeline;
-  List<Event> _events = const [];
+  List<Event> _messageEvents = const [];
   bool _isRequestingHistory = false;
   bool _isSendingMedia = false;
 
-  // Resolved avatar URL strings, keyed by senderId
+  /// The event the user is currently replying to, or null.
+  Event? _replyToEvent;
+
   final Map<String, String?> _avatarCache = {};
 
   @override
@@ -38,22 +40,18 @@ class _RoomPageState extends State<RoomPage> {
     _timelineFuture.then((tl) {
       _timeline = tl;
       _updateEvents();
-      // Mark all messages as read when the timeline is ready
       _markAsRead();
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _fillScreen());
     });
     _scrollController.addListener(_onScroll);
   }
 
-  /// Send a read receipt for the latest event, clearing the notification badge.
   Future<void> _markAsRead() async {
     try {
-      final latestEvent = widget.room.lastEvent;
-      if (latestEvent != null) {
-        await widget.room.setReadMarker(latestEvent.eventId);
-      }
-    } catch (_) {
-      // Non-critical — ignore failures silently
-    }
+      final latest = widget.room.lastEvent;
+      if (latest != null) await widget.room.setReadMarker(latest.eventId);
+    } catch (_) {}
   }
 
   @override
@@ -65,37 +63,72 @@ class _RoomPageState extends State<RoomPage> {
     super.dispose();
   }
 
+  static bool _isDisplayableMessage(Event e) =>
+      e.type == 'm.room.message' || e.type == 'm.room.encrypted';
+
   void _updateEvents() {
     if (!mounted || _timeline == null) return;
+    final next = _timeline!.events
+        .where(_isDisplayableMessage)
+        .toList(growable: false);
 
-    final next = List<Event>.from(_timeline!.events);
+    if (next.length == _messageEvents.length) {
+      bool same = true;
+      for (int i = 0; i < next.length; i++) {
+        if (next[i].eventId != _messageEvents[i].eventId ||
+            next[i].status != _messageEvents[i].status) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
+    }
 
-    if (next.length == _events.length) return;
+    setState(() => _messageEvents = next);
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _fillScreen());
+  }
 
-    setState(() => _events = next);
+  Future<void> _fillScreen() async {
+    if (_isRequestingHistory) return;
+    final tl = _timeline;
+    if (tl == null) return;
+    while (tl.canRequestHistory && !_isScrollable()) {
+      await _fetchMoreHistory();
+      await Future.delayed(const Duration(milliseconds: 80));
+      if (!mounted) return;
+    }
+  }
+
+  bool _isScrollable() {
+    if (!_scrollController.hasClients) return false;
+    return _scrollController.position.maxScrollExtent > 0;
   }
 
   void _onScroll() {
     if (!_scrollController.hasClients || _isRequestingHistory) return;
-
     final tl = _timeline;
     if (tl == null || !tl.canRequestHistory) return;
-
-    final position = _scrollController.position;
-
-    // only trigger when near top in reverse list
-    if (position.pixels <= 300) {
-      _fetchMoreHistory();
+    final pos = _scrollController.position;
+    final buffer = pos.viewportDimension * 0.5;
+    if (pos.pixels >= pos.maxScrollExtent - buffer) {
+      _fetchMoreHistory().then((_) {
+        if (mounted) _fillScreen();
+      });
     }
   }
 
   Future<void> _fetchMoreHistory() async {
+    if (_isRequestingHistory) return;
+    final tl = _timeline;
+    if (tl == null || !tl.canRequestHistory) return;
     _isRequestingHistory = true;
+    if (mounted) setState(() {});
     try {
-      final tl = await _timelineFuture;
-      await tl.requestHistory();
+      await tl.requestHistory(historyCount: 50);
     } finally {
-      if (mounted) _isRequestingHistory = false;
+      _isRequestingHistory = false;
+      if (mounted) setState(() {});
     }
   }
 
@@ -109,19 +142,26 @@ class _RoomPageState extends State<RoomPage> {
     }
     try {
       final uri = await mxUri.getThumbnailUri(
-        widget.room.client,
-        width: 48,
-        height: 48,
-      );
+          widget.room.client, width: 48, height: 48);
       final token = widget.room.client.accessToken ?? '';
       final sep = uri.query.isEmpty ? '?' : '&';
-      final url = token.isEmpty ? uri.toString() : '$uri${sep}access_token=$token';
+      final url =
+      token.isEmpty ? uri.toString() : '$uri${sep}access_token=$token';
       _avatarCache[id] = url;
       return url;
     } catch (_) {
       _avatarCache[id] = null;
       return null;
     }
+  }
+
+  void _startReply(Event event) {
+    setState(() => _replyToEvent = event);
+    _composerFocusNode.requestFocus();
+  }
+
+  void _cancelReply() {
+    setState(() => _replyToEvent = null);
   }
 
   @override
@@ -147,17 +187,20 @@ class _RoomPageState extends State<RoomPage> {
           children: [
             Expanded(
               child: _timeline == null
-                  ? const Center(child: CircularProgressIndicator.adaptive())
+                  ? const Center(
+                  child: CircularProgressIndicator.adaptive())
                   : EventList(
-                events: _events,
+                events: _messageEvents,
                 timeline: _timeline!,
                 room: room,
                 scrollController: _scrollController,
                 ownUserId: room.client.userID ?? '',
                 resolveAvatarUrl: _resolveAvatarUrl,
                 onReacted: () {
-                  // setState(() {});
+                  if (mounted) setState(() {});
                 },
+                onReply: _startReply,
+                isLoadingHistory: _isRequestingHistory,
               ),
             ),
             InputBar(
@@ -165,6 +208,8 @@ class _RoomPageState extends State<RoomPage> {
               composerFocusNode: _composerFocusNode,
               isSendingMedia: _isSendingMedia,
               room: room,
+              replyToEvent: _replyToEvent,
+              onCancelReply: _cancelReply,
               onSendMessage: () {
                 if (mounted) setState(() {});
                 _markAsRead();

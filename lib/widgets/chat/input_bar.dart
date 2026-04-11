@@ -14,6 +14,10 @@ class InputBar extends StatelessWidget {
   final Function onStartSendingMedia;
   final Function onFinishedSendingMedia;
 
+  /// When set, shows a reply banner and sends as a reply.
+  final Event? replyToEvent;
+  final VoidCallback? onCancelReply;
+
   const InputBar({
     super.key,
     required this.sendController,
@@ -23,6 +27,8 @@ class InputBar extends StatelessWidget {
     required this.onSendMessage,
     required this.onStartSendingMedia,
     required this.onFinishedSendingMedia,
+    this.replyToEvent,
+    this.onCancelReply,
   });
 
   @override
@@ -30,69 +36,76 @@ class InputBar extends StatelessWidget {
     return Container(
       decoration: const BoxDecoration(
         color: Color(0xFF10151D),
-        border: Border(
-          top: BorderSide(color: Color(0xFF1D2530), width: 1),
-        ),
+        border: Border(top: BorderSide(color: Color(0xFF1D2530), width: 1)),
       ),
-      padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            onPressed: () {
-              _showAttachmentMenu(context);
-            },
-            icon: const Icon(Icons.add_circle_outline,
-            color: Color(0xFFF2F4F7)),
+          // Reply banner
+          if (replyToEvent != null) _ReplyBanner(
+            event: replyToEvent!,
+            onCancel: onCancelReply ?? () {},
           ),
-          Expanded(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(minHeight: 48, maxHeight: 140),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1A212C),
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: const Color(0xFF263041)),
+
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                IconButton(
+                  onPressed: () => _showAttachmentMenu(context),
+                  icon: const Icon(Icons.add_circle_outline,
+                      color: Color(0xFFF2F4F7)),
                 ),
-                child: Scrollbar(
-                  child: TextField(
-                    controller: sendController,
-                    focusNode: composerFocusNode,
-                    style: const TextStyle(color: Colors.white),
-                    keyboardType: TextInputType.multiline,
-                    minLines: 1,
-                    maxLines: 6,
-                    textInputAction: TextInputAction.newline,
-                    decoration: const InputDecoration(
-                      hintText: 'Message',
-                      hintStyle: TextStyle(color: Color(0xFF8B96A5)),
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 14,
+                Expanded(
+                  child: ConstrainedBox(
+                    constraints:
+                    const BoxConstraints(minHeight: 48, maxHeight: 140),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1A212C),
+                        borderRadius: BorderRadius.circular(24),
+                        border:
+                        Border.all(color: const Color(0xFF263041)),
                       ),
-                      border: InputBorder.none,
+                      child: Scrollbar(
+                        child: TextField(
+                          controller: sendController,
+                          focusNode: composerFocusNode,
+                          style: const TextStyle(color: Colors.white),
+                          keyboardType: TextInputType.multiline,
+                          minLines: 1,
+                          maxLines: 6,
+                          textInputAction: TextInputAction.newline,
+                          decoration: const InputDecoration(
+                            hintText: 'Message',
+                            hintStyle:
+                            TextStyle(color: Color(0xFF8B96A5)),
+                            contentPadding: EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 14),
+                            border: InputBorder.none,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          InkWell(
-            onTap: _send,
-            borderRadius: BorderRadius.circular(24),
-            child: Container(
-              width: 48,
-              height: 48,
-              decoration: const BoxDecoration(
-                color: Color(0xFF2E7DFF),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.send_rounded,
-                color: Colors.white,
-                size: 20,
-              ),
+                const SizedBox(width: 10),
+                InkWell(
+                  onTap: () => _send(),
+                  borderRadius: BorderRadius.circular(24),
+                  child: Container(
+                    width: 48,
+                    height: 48,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF2E7DFF),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.send_rounded,
+                        color: Colors.white, size: 20),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -100,58 +113,68 @@ class InputBar extends StatelessWidget {
     );
   }
 
-  Future<void> _showAttachmentMenu(BuildContext context) async {
-    if (isSendingMedia) return;
-
-    await showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: const Color(0xFF10151D),
-      builder: (context) {
-        return SafeArea(
-          child: Wrap(
-            children: [
-              ListTile(
-                leading: const Icon(Icons.image_outlined, color: Colors.white),
-                title: const Text('Photo',
-                    style: TextStyle(color: Colors.white)),
-                onTap: () {
-                  Navigator.pop(context);
-                  _pickImageOrVideo(context);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.videocam_outlined,
-                    color: Colors.white),
-                title: const Text(
-                  'Video',
-                  style: TextStyle(color: Colors.white)
-                ),
-                onTap: () {
-                  Navigator.pop(context);
-                  _pickVideo();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.attach_file, color: Colors.white),
-                title: const Text('File', style: TextStyle(color: Colors.white)),
-                onTap: () {
-                  Navigator.pop(context);
-                  _pickDocument();
-                },
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
   void _send() {
     final message = sendController.text.trim();
     if (message.isEmpty) return;
-    room.sendTextEvent(message);
+
+    if (replyToEvent != null) {
+      // Send as reply using Matrix reply relation
+      room.sendTextEvent(
+        message,
+        inReplyTo: replyToEvent,
+      );
+      onCancelReply?.call();
+    } else {
+      room.sendTextEvent(message);
+    }
+
     sendController.clear();
     onSendMessage();
+  }
+
+  Future<void> _showAttachmentMenu(BuildContext context) async {
+    if (isSendingMedia) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF10151D),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) => SafeArea(
+        child: Wrap(children: [
+          const SizedBox(height: 8),
+          ListTile(
+            leading:
+            const Icon(Icons.image_outlined, color: Colors.white),
+            title: const Text('Photo',
+                style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(context);
+              _pickImageOrVideo(context);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.videocam_outlined,
+                color: Colors.white),
+            title: const Text('Video',
+                style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(context);
+              _pickVideo();
+            },
+          ),
+          ListTile(
+            leading:
+            const Icon(Icons.attach_file, color: Colors.white),
+            title: const Text('File',
+                style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(context);
+              _pickDocument();
+            },
+          ),
+        ]),
+      ),
+    );
   }
 
   Future<void> _pickImageOrVideo(BuildContext context) async {
@@ -159,56 +182,43 @@ class InputBar extends StatelessWidget {
     final source = await showModalBottomSheet<ImageSource>(
       context: context,
       backgroundColor: const Color(0xFF10151D),
-      builder: (context) {
-        return SafeArea(
-          child: Wrap(
-            children: [
-              ListTile(
-                leading: const Icon(Icons.photo_library, color: Colors.white),
-                title: const Text('Gallery',
-                    style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(context, ImageSource.gallery),
-              ),
-              ListTile(
-                leading: const Icon(Icons.photo_camera, color: Colors.white),
-                title: const Text('Camera',
-                    style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(context, ImageSource.camera),
-              ),
-            ],
+      builder: (context) => SafeArea(
+        child: Wrap(children: [
+          ListTile(
+            leading:
+            const Icon(Icons.photo_library, color: Colors.white),
+            title: const Text('Gallery',
+                style: TextStyle(color: Colors.white)),
+            onTap: () => Navigator.pop(context, ImageSource.gallery),
           ),
-        );
-      },
+          ListTile(
+            leading:
+            const Icon(Icons.photo_camera, color: Colors.white),
+            title: const Text('Camera',
+                style: TextStyle(color: Colors.white)),
+            onTap: () => Navigator.pop(context, ImageSource.camera),
+          ),
+        ]),
+      ),
     );
-
     if (source == null) return;
-
-    final picked = await picker.pickImage(source: source, imageQuality: 85);
+    final picked =
+    await picker.pickImage(source: source, imageQuality: 85);
     if (picked == null) return;
-
-    await _sendPickedFile(
-      File(picked.path),
-      forcedMime: 'image/jpeg',
-    );
+    await _sendPickedFile(File(picked.path), forcedMime: 'image/jpeg');
   }
 
   Future<void> _sendPickedFile(File file, {String? forcedMime}) async {
     if (isSendingMedia) return;
     onStartSendingMedia();
-
     try {
-      final mimeType =
-          forcedMime ?? lookupMimeType(file.path) ?? 'application/octet-stream';
+      final mimeType = forcedMime ??
+          lookupMimeType(file.path) ??
+          'application/octet-stream';
       final fileName = file.path.split(Platform.pathSeparator).last;
       final bytes = await file.readAsBytes();
-
-      final matrixFile = MatrixFile(
-        bytes: bytes,
-        name: fileName,
-        mimeType: mimeType,
-      );
-
-      await room.sendFileEvent(matrixFile);
+      await room.sendFileEvent(
+          MatrixFile(bytes: bytes, name: fileName, mimeType: mimeType));
     } finally {
       onFinishedSendingMedia();
     }
@@ -216,24 +226,80 @@ class InputBar extends StatelessWidget {
 
   Future<void> _pickVideo() async {
     final picker = ImagePicker();
-    final picked = await picker.pickVideo(source: ImageSource.gallery);
+    final picked =
+    await picker.pickVideo(source: ImageSource.gallery);
     if (picked == null) return;
-
-    await _sendPickedFile(
-      File(picked.path),
-      forcedMime: 'video/mp4',
-    );
+    await _sendPickedFile(File(picked.path), forcedMime: 'video/mp4');
   }
 
   Future<void> _pickDocument() async {
-    final result = await FilePicker.platform.pickFiles(
-      allowMultiple: false,
-      type: FileType.any,
-      withData: false,
-    );
-
+    final result = await FilePicker.platform
+        .pickFiles(allowMultiple: false, type: FileType.any, withData: false);
     if (result == null || result.files.single.path == null) return;
-
     await _sendPickedFile(File(result.files.single.path!));
+  }
+}
+
+// ─── Reply banner shown above the text field ─────────────────────────────────
+
+class _ReplyBanner extends StatelessWidget {
+  final Event event;
+  final VoidCallback onCancel;
+
+  const _ReplyBanner({required this.event, required this.onCancel});
+
+  @override
+  Widget build(BuildContext context) {
+    final name = event.senderFromMemoryOrFallback.calcDisplayname();
+    final body = event.body.trim();
+    final preview =
+    event.hasAttachment ? '📎 Attachment' : (body.length > 60 ? '${body.substring(0, 60)}…' : body);
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+      decoration: const BoxDecoration(
+        color: Color(0xFF0F1720),
+        border: Border(
+          top: BorderSide(color: Color(0xFF1D2530)),
+          left: BorderSide(color: Color(0xFF4C8DF6), width: 3),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.reply, color: Color(0xFF4C8DF6), size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Replying to $name',
+                  style: const TextStyle(
+                      color: Color(0xFF4C8DF6),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  preview,
+                  style: const TextStyle(
+                      color: Color(0xFF9AA4B2), fontSize: 12),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close,
+                color: Color(0xFF9AA4B2), size: 18),
+            onPressed: onCancel,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          ),
+        ],
+      ),
+    );
   }
 }

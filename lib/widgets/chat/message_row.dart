@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
-
 import 'avatar.dart';
 import 'message_bubble.dart';
 
@@ -11,6 +10,7 @@ class MessageRow extends StatelessWidget {
   final bool isOwn;
   final Future<String?> Function(Event) resolveAvatarUrl;
   final Function onReacted;
+  final Function(Event)? onReply;
 
   const MessageRow({
     super.key,
@@ -19,19 +19,24 @@ class MessageRow extends StatelessWidget {
     required this.room,
     required this.isOwn,
     required this.resolveAvatarUrl,
-    required this.onReacted
+    required this.onReacted,
+    this.onReply,
   });
 
   @override
   Widget build(BuildContext context) {
-    final bubble = RepaintBoundary(
-      child: MessageBubble(
-          timeline: timeline,
-          event: event,
-          room: room,
-          isOwn: isOwn,
-          onReacted: onReacted
-      ),
+    // NOTE: RepaintBoundary has been intentionally removed here.
+    // It prevented MessageBubble (a StatefulWidget) from repainting when its
+    // internal state changed (reactions, drag offset), causing the UI to appear
+    // stale until the whole page rebuilt.
+    final bubble = MessageBubble(
+      timeline: timeline,
+      event: event,
+      room: room,
+      isOwn: isOwn,
+      onReacted: onReacted,
+      // Fix: was missing — this is why swipe-to-reply never fired.
+      onReply: onReply,
     );
 
     return Padding(
