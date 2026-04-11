@@ -47,6 +47,11 @@ class _VerificationPageState extends State<VerificationPage> with SingleTickerPr
     if (widget.request != null) {
       _acceptIncoming(widget.request!);
     }
+
+    bool isVerified = widget.client.unverifiedDevices.where((device) => device.deviceId == widget.client.deviceID).isEmpty;
+    if (isVerified) {
+      _step = _VerifStep.done;
+    }
   }
 
   @override
