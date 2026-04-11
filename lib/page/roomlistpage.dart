@@ -31,6 +31,26 @@ class _RoomListPageState extends State<RoomListPage> {
     super.dispose();
   }
 
+  static String stripReplyFallback(String body) {
+    if (!body.startsWith('> ')) return body;
+    final lines = body.split('\n');
+    int i = 0;
+    while (i < lines.length && lines[i].startsWith('> ')) {
+      i++;
+    }
+    // Skip the blank separator line.
+    if (i < lines.length && lines[i].trim().isEmpty) i++;
+    return lines.sublist(i).join('\n').trim();
+  }
+
+  String _getInsightText(Event event) {
+    String newBody = stripReplyFallback(event.body);
+    if (event.type != "m.room.message") {
+      newBody = "Event";
+    }
+    return newBody;
+  }
+
   void _listenForVerificationRequests() {
     final client = Provider.of<Client>(context, listen: false);
     _verifSub = client.onKeyVerificationRequest.stream.listen((request) {
@@ -178,7 +198,7 @@ class _RoomListPageState extends State<RoomListPage> {
                       ],
                     ),
                     subtitle: Text(
-                      room.lastEvent?.body ?? 'No messages',
+                      room.lastEvent?.body == null ? 'No messages' : _getInsightText(room.lastEvent!),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style:
