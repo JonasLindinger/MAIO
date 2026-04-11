@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:matrix/matrix.dart';
 import 'package:mime/mime.dart';
+import '../chat/message_bubble.dart'; // for MessageBubbleState.stripReplyFallback
 
 class InputBar extends StatelessWidget {
   final TextEditingController sendController;
@@ -14,7 +15,6 @@ class InputBar extends StatelessWidget {
   final Function onStartSendingMedia;
   final Function onFinishedSendingMedia;
 
-  /// When set, shows a reply banner and sends as a reply.
   final Event? replyToEvent;
   final VoidCallback? onCancelReply;
 
@@ -41,12 +41,11 @@ class InputBar extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Reply banner
-          if (replyToEvent != null) _ReplyBanner(
-            event: replyToEvent!,
-            onCancel: onCancelReply ?? () {},
-          ),
-
+          if (replyToEvent != null)
+            _ReplyBanner(
+              event: replyToEvent!,
+              onCancel: onCancelReply ?? () {},
+            ),
           Padding(
             padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
             child: Row(
@@ -59,8 +58,8 @@ class InputBar extends StatelessWidget {
                 ),
                 Expanded(
                   child: ConstrainedBox(
-                    constraints:
-                    const BoxConstraints(minHeight: 48, maxHeight: 140),
+                    constraints: const BoxConstraints(
+                        minHeight: 48, maxHeight: 140),
                     child: Container(
                       decoration: BoxDecoration(
                         color: const Color(0xFF1A212C),
@@ -92,7 +91,7 @@ class InputBar extends StatelessWidget {
                 ),
                 const SizedBox(width: 10),
                 InkWell(
-                  onTap: () => _send(),
+                  onTap: _send,
                   borderRadius: BorderRadius.circular(24),
                   child: Container(
                     width: 48,
@@ -118,11 +117,7 @@ class InputBar extends StatelessWidget {
     if (message.isEmpty) return;
 
     if (replyToEvent != null) {
-      // Send as reply using Matrix reply relation
-      room.sendTextEvent(
-        message,
-        inReplyTo: replyToEvent,
-      );
+      room.sendTextEvent(message, inReplyTo: replyToEvent);
       onCancelReply?.call();
     } else {
       room.sendTextEvent(message);
@@ -138,13 +133,14 @@ class InputBar extends StatelessWidget {
       context: context,
       backgroundColor: const Color(0xFF10151D),
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+          borderRadius:
+          BorderRadius.vertical(top: Radius.circular(20))),
       builder: (context) => SafeArea(
         child: Wrap(children: [
           const SizedBox(height: 8),
           ListTile(
-            leading:
-            const Icon(Icons.image_outlined, color: Colors.white),
+            leading: const Icon(Icons.image_outlined,
+                color: Colors.white),
             title: const Text('Photo',
                 style: TextStyle(color: Colors.white)),
             onTap: () {
@@ -163,8 +159,7 @@ class InputBar extends StatelessWidget {
             },
           ),
           ListTile(
-            leading:
-            const Icon(Icons.attach_file, color: Colors.white),
+            leading: const Icon(Icons.attach_file, color: Colors.white),
             title: const Text('File',
                 style: TextStyle(color: Colors.white)),
             onTap: () {
@@ -185,18 +180,20 @@ class InputBar extends StatelessWidget {
       builder: (context) => SafeArea(
         child: Wrap(children: [
           ListTile(
-            leading:
-            const Icon(Icons.photo_library, color: Colors.white),
+            leading: const Icon(Icons.photo_library,
+                color: Colors.white),
             title: const Text('Gallery',
                 style: TextStyle(color: Colors.white)),
-            onTap: () => Navigator.pop(context, ImageSource.gallery),
+            onTap: () =>
+                Navigator.pop(context, ImageSource.gallery),
           ),
           ListTile(
-            leading:
-            const Icon(Icons.photo_camera, color: Colors.white),
+            leading: const Icon(Icons.photo_camera,
+                color: Colors.white),
             title: const Text('Camera',
                 style: TextStyle(color: Colors.white)),
-            onTap: () => Navigator.pop(context, ImageSource.camera),
+            onTap: () =>
+                Navigator.pop(context, ImageSource.camera),
           ),
         ]),
       ),
@@ -205,17 +202,20 @@ class InputBar extends StatelessWidget {
     final picked =
     await picker.pickImage(source: source, imageQuality: 85);
     if (picked == null) return;
-    await _sendPickedFile(File(picked.path), forcedMime: 'image/jpeg');
+    await _sendPickedFile(File(picked.path),
+        forcedMime: 'image/jpeg');
   }
 
-  Future<void> _sendPickedFile(File file, {String? forcedMime}) async {
+  Future<void> _sendPickedFile(File file,
+      {String? forcedMime}) async {
     if (isSendingMedia) return;
     onStartSendingMedia();
     try {
       final mimeType = forcedMime ??
           lookupMimeType(file.path) ??
           'application/octet-stream';
-      final fileName = file.path.split(Platform.pathSeparator).last;
+      final fileName =
+          file.path.split(Platform.pathSeparator).last;
       final bytes = await file.readAsBytes();
       await room.sendFileEvent(
           MatrixFile(bytes: bytes, name: fileName, mimeType: mimeType));
@@ -229,18 +229,21 @@ class InputBar extends StatelessWidget {
     final picked =
     await picker.pickVideo(source: ImageSource.gallery);
     if (picked == null) return;
-    await _sendPickedFile(File(picked.path), forcedMime: 'video/mp4');
+    await _sendPickedFile(File(picked.path),
+        forcedMime: 'video/mp4');
   }
 
   Future<void> _pickDocument() async {
-    final result = await FilePicker.platform
-        .pickFiles(allowMultiple: false, type: FileType.any, withData: false);
+    final result = await FilePicker.platform.pickFiles(
+        allowMultiple: false,
+        type: FileType.any,
+        withData: false);
     if (result == null || result.files.single.path == null) return;
     await _sendPickedFile(File(result.files.single.path!));
   }
 }
 
-// ─── Reply banner shown above the text field ─────────────────────────────────
+// ─── Reply banner ─────────────────────────────────────────────────────────────
 
 class _ReplyBanner extends StatelessWidget {
   final Event event;
@@ -251,9 +254,15 @@ class _ReplyBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final name = event.senderFromMemoryOrFallback.calcDisplayname();
-    final body = event.body.trim();
-    final preview =
-    event.hasAttachment ? '📎 Attachment' : (body.length > 60 ? '${body.substring(0, 60)}…' : body);
+    final rawBody = event.body.trim();
+    // Strip the Matrix reply-fallback prefix so we never show
+    // "> <@user:server> quoted text" in the composer banner.
+    final cleanBody = MessageBubbleState.stripReplyFallback(rawBody);
+    final preview = event.hasAttachment
+        ? '📎 Attachment'
+        : (cleanBody.length > 60
+        ? '${cleanBody.substring(0, 60)}…'
+        : cleanBody);
 
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
@@ -296,7 +305,8 @@ class _ReplyBanner extends StatelessWidget {
                 color: Color(0xFF9AA4B2), size: 18),
             onPressed: onCancel,
             padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            constraints:
+            const BoxConstraints(minWidth: 32, minHeight: 32),
           ),
         ],
       ),

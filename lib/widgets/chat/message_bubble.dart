@@ -14,6 +14,7 @@ class MessageBubble extends StatefulWidget {
   final bool isOwn;
   final Function onReacted;
   final Function(Event)? onReply;
+  final void Function(String eventId)? onScrollToEvent;
 
   const MessageBubble({
     super.key,
@@ -23,26 +24,73 @@ class MessageBubble extends StatefulWidget {
     required this.isOwn,
     required this.onReacted,
     this.onReply,
+    this.onScrollToEvent,
   });
 
   @override
-  State<MessageBubble> createState() => _MessageBubbleState();
+  MessageBubbleState createState() => MessageBubbleState();
 }
 
-class _MessageBubbleState extends State<MessageBubble> {
-  // Optimistic map: emoji -> +1 (added) or -1 (removed)
-  final Map<String, int> _optimistic = {};
+class MessageBubbleState extends State<MessageBubble> {
+  /// emoji -> true (added optimistically) | false (removed optimistically)
+  final Map<String, bool> _optimistic = {};
+
   double _dragOffset = 0;
-  bool _replyTriggered = false;
+  bool _replyArmed = false;
+
+  // ─── Public API called by EventList ────────────────────────────────────────
+
+  /// Called by EventList every time the timeline updates (onChange/onInsert/
+  /// onRemove). We check each pending optimistic entry: if the server state
+  /// now matches the intended outcome we drop the entry; if it contradicts
+  /// we also drop it (nothing better to do). This is the ONLY place we clear
+  /// optimistic entries — never on a fixed timer or frame callback.
+  void reconcileOptimistic() {
+    if (_optimistic.isEmpty) return;
+    final ownId = widget.room.client.userID ?? '';
+    final serverReactions = _reactionsFromTimeline();
+    final toRemove = <String>[];
+    _optimistic.forEach((emoji, addedOptimistically) {
+      final serverHasIt =
+          serverReactions[emoji]?.users.contains(ownId) ?? false;
+      // If server now reflects what we intended, or has gone the other way
+      // (rare error case), the optimistic entry is stale — drop it.
+      if (addedOptimistically == serverHasIt || !addedOptimistically == !serverHasIt) {
+        toRemove.add(emoji);
+      }
+    });
+    if (toRemove.isNotEmpty && mounted) {
+      setState(() {
+        for (final e in toRemove) {
+          _optimistic.remove(e);
+        }
+      });
+    }
+  }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
+  /// Strips the Matrix plaintext reply-fallback prefix:
+  ///   > <@user:server> quoted text\n\n real text
+  static String stripReplyFallback(String body) {
+    if (!body.startsWith('> ')) return body;
+    final lines = body.split('\n');
+    int i = 0;
+    while (i < lines.length && lines[i].startsWith('> ')) {
+      i++;
+    }
+    // Skip the blank separator line.
+    if (i < lines.length && lines[i].trim().isEmpty) i++;
+    return lines.sublist(i).join('\n').trim();
+  }
+
   String? _eventBody() {
-    final body = widget.event.getDisplayEvent(widget.timeline).body.trim();
-    if (body.isEmpty) return null;
-    if (!widget.event.hasAttachment) return body;
+    final raw = widget.event.getDisplayEvent(widget.timeline).body.trim();
+    if (raw.isEmpty) return null;
+    final body = stripReplyFallback(raw);
+    if (!widget.event.hasAttachment) return body.isEmpty ? null : body;
     final filename = widget.event.content['filename'];
-    if (filename != null && filename != body) return body;
+    if (filename != null && filename != body) return body.isEmpty ? null : body;
     return null;
   }
 
@@ -64,37 +112,44 @@ class _MessageBubbleState extends State<MessageBubble> {
 
   // ─── Reactions ─────────────────────────────────────────────────────────────
 
-  /// Builds the current reaction state from the timeline, applying any
-  /// in-flight optimistic deltas on top.
+  Map<String, _ReactionData> _reactionsFromTimeline() {
+    final map = <String, Set<String>>{};
+    for (final e in widget.timeline.events) {
+      if (e.type != EventTypes.Reaction) continue;
+      if (e.relationshipEventId != widget.event.eventId) continue;
+      final key = e.content
+          .tryGetMap<String, dynamic>('m.relates_to')
+          ?.tryGet<String>('key');
+      if (key == null) continue;
+      map.putIfAbsent(key, () => {});
+      map[key]!.add(e.senderId);
+    }
+    return map.map((k, v) => MapEntry(k, _ReactionData(users: v)));
+  }
+
   Map<String, _ReactionData> _reactions() {
     final ownId = widget.room.client.userID ?? '';
-
-    // Collect reactions, tracking which server-side event covers each
-    // (userId, emoji) pair so we can redact it on unreact.
     final map = <String, Set<String>>{};
 
     for (final e in widget.timeline.events) {
       if (e.type != EventTypes.Reaction) continue;
       if (e.relationshipEventId != widget.event.eventId) continue;
-
       final key = e.content
           .tryGetMap<String, dynamic>('m.relates_to')
           ?.tryGet<String>('key');
       if (key == null) continue;
-
       map.putIfAbsent(key, () => {});
       map[key]!.add(e.senderId);
     }
 
-    // Apply optimistic deltas
-    _optimistic.forEach((emoji, delta) {
-      map.putIfAbsent(emoji, () => {});
-      if (delta > 0) {
+    _optimistic.forEach((emoji, added) {
+      if (added) {
+        map.putIfAbsent(emoji, () => {});
         map[emoji]!.add(ownId);
       } else {
-        map[emoji]!.remove(ownId);
+        map[emoji]?.remove(ownId);
+        if (map[emoji]?.isEmpty ?? false) map.remove(emoji);
       }
-      if (map[emoji]!.isEmpty) map.remove(emoji);
     });
 
     return map.map((k, v) => MapEntry(k, _ReactionData(users: v)));
@@ -102,16 +157,14 @@ class _MessageBubbleState extends State<MessageBubble> {
 
   Future<void> _react(String emoji) async {
     final ownId = widget.room.client.userID ?? '';
-    final currentReactions = _reactions();
-    final isMine = currentReactions[emoji]?.users.contains(ownId) ?? false;
+    final serverReactions = _reactionsFromTimeline();
+    final isMine = serverReactions[emoji]?.users.contains(ownId) ?? false;
 
-    // Apply optimistic update immediately so the UI reflects the change
-    // without waiting for the server round-trip.
-    setState(() => _optimistic[emoji] = isMine ? -1 : 1);
+    // Show intended end-state immediately.
+    setState(() => _optimistic[emoji] = !isMine);
 
     try {
       if (isMine) {
-        // Find the reaction event that belongs to us and redact it.
         for (final e in widget.timeline.events) {
           if (e.type == EventTypes.Reaction &&
               e.relationshipEventId == widget.event.eventId &&
@@ -128,18 +181,13 @@ class _MessageBubbleState extends State<MessageBubble> {
       } else {
         await widget.room.sendReaction(widget.event.eventId, emoji);
       }
-    } catch (_) {
-      // Revert optimistic on failure
-      if (mounted) {
-        setState(() => _optimistic.remove(emoji));
-      }
-    } finally {
-      // Once the timeline updates via onChange/onInsert the real state will
-      // supersede the optimistic entry; clear it so we don't double-count.
-      if (mounted) {
-        setState(() => _optimistic.remove(emoji));
-      }
+      // Notify the parent so it calls setState and then reconcileOptimistic
+      // on all visible bubbles — the optimistic entry will be cleared as soon
+      // as the timeline actually reflects the change.
       widget.onReacted();
+    } catch (_) {
+      // Revert immediately on network failure.
+      if (mounted) setState(() => _optimistic.remove(emoji));
     }
   }
 
@@ -180,7 +228,6 @@ class _MessageBubbleState extends State<MessageBubble> {
     );
   }
 
-  /// Shows who reacted with [emoji] as a bottom sheet (not a dialog).
   void _showReactionDetail(String emoji, _ReactionData data) {
     HapticFeedback.lightImpact();
     showModalBottomSheet<void>(
@@ -199,23 +246,27 @@ class _MessageBubbleState extends State<MessageBubble> {
 
   void _onDragUpdate(DragUpdateDetails d) {
     if (widget.onReply == null) return;
-    // Own messages swipe left (negative dx), others swipe right (positive dx).
     final delta = widget.isOwn ? -d.delta.dx : d.delta.dx;
-    if (delta < 0) return;
-    setState(() {
-      _dragOffset = (_dragOffset + delta).clamp(0.0, 72.0);
-    });
-    if (_dragOffset >= 64 && !_replyTriggered) {
-      _replyTriggered = true;
+    if (delta < 0 && _dragOffset <= 0) return;
+
+    final newOffset = (_dragOffset + delta).clamp(0.0, 72.0);
+    setState(() => _dragOffset = newOffset);
+
+    if (newOffset >= 64 && !_replyArmed) {
+      _replyArmed = true;
       HapticFeedback.mediumImpact();
+    }
+    if (newOffset < 64 && _replyArmed) {
+      _replyArmed = false;
+      HapticFeedback.lightImpact();
     }
   }
 
   void _onDragEnd(DragEndDetails _) {
-    if (_replyTriggered) widget.onReply?.call(widget.event);
+    if (_replyArmed) widget.onReply?.call(widget.event);
     setState(() {
       _dragOffset = 0;
-      _replyTriggered = false;
+      _replyArmed = false;
     });
   }
 
@@ -256,7 +307,13 @@ class _MessageBubbleState extends State<MessageBubble> {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (replyEvent != null)
-              _ReplyPreview(event: replyEvent, isOwn: widget.isOwn),
+              _ReplyPreview(
+                event: replyEvent,
+                isOwn: widget.isOwn,
+                onTap: widget.onScrollToEvent != null
+                    ? () => widget.onScrollToEvent!(replyEvent.eventId)
+                    : null,
+              ),
             if (widget.event.hasAttachment) ...[
               AttachmentPreview(
                 timeline: widget.timeline,
@@ -275,7 +332,6 @@ class _MessageBubbleState extends State<MessageBubble> {
       ),
     );
 
-    // Reply hint icon that fades/scales in as the user drags.
     final replyHint = AnimatedOpacity(
       opacity: (_dragOffset / 64).clamp(0.0, 1.0),
       duration: Duration.zero,
@@ -285,10 +341,16 @@ class _MessageBubbleState extends State<MessageBubble> {
           width: 32,
           height: 32,
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.15),
+            color: _replyArmed
+                ? const Color(0xFF2E7DFF).withOpacity(0.35)
+                : Colors.white.withOpacity(0.15),
             shape: BoxShape.circle,
           ),
-          child: const Icon(Icons.reply, color: Colors.white70, size: 18),
+          child: Icon(
+            Icons.reply,
+            color: _replyArmed ? const Color(0xFF8BBFFF) : Colors.white70,
+            size: 18,
+          ),
         ),
       ),
     );
@@ -301,7 +363,10 @@ class _MessageBubbleState extends State<MessageBubble> {
         children: [
           if (!widget.isOwn)
             Positioned(
-                left: -40, top: 0, bottom: 0, child: Center(child: replyHint)),
+                left: -40,
+                top: 0,
+                bottom: 0,
+                child: Center(child: replyHint)),
           if (widget.isOwn)
             Positioned(
                 right: -40,
@@ -355,8 +420,8 @@ class _MessageBubbleState extends State<MessageBubble> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(entry.key,
-                          style:
-                          const TextStyle(fontSize: 15, height: 1.1)),
+                          style: const TextStyle(
+                              fontSize: 15, height: 1.1)),
                       const SizedBox(width: 5),
                       Text(
                         '${entry.value.count}',
@@ -380,65 +445,77 @@ class _MessageBubbleState extends State<MessageBubble> {
   }
 }
 
-// ─── Reply preview (inside the bubble) ───────────────────────────────────────
+// ─── Reply preview (inside bubble) ───────────────────────────────────────────
 
 class _ReplyPreview extends StatelessWidget {
   final Event event;
   final bool isOwn;
+  final VoidCallback? onTap;
 
-  const _ReplyPreview({required this.event, required this.isOwn});
+  const _ReplyPreview({
+    required this.event,
+    required this.isOwn,
+    this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     final name = event.senderFromMemoryOrFallback.calcDisplayname();
-    final body = event.body.trim();
+    final strippedBody =
+    MessageBubbleState.stripReplyFallback(event.body.trim());
     final preview = event.hasAttachment
         ? '📎 Attachment'
-        : (body.length > 80 ? '${body.substring(0, 80)}…' : body);
+        : (strippedBody.length > 80
+        ? '${strippedBody.substring(0, 80)}…'
+        : strippedBody);
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.2),
-        borderRadius: BorderRadius.circular(10),
-        border: Border(
-          left: BorderSide(
-            color: isOwn
-                ? Colors.white.withOpacity(0.6)
-                : const Color(0xFF4C8DF6),
-            width: 3,
-          ),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            name,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color:
-              isOwn ? Colors.white.withOpacity(0.85) : const Color(0xFF4C8DF6),
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.2),
+          borderRadius: BorderRadius.circular(10),
+          border: Border(
+            left: BorderSide(
+              color: isOwn
+                  ? Colors.white.withOpacity(0.6)
+                  : const Color(0xFF4C8DF6),
+              width: 3,
             ),
           ),
-          const SizedBox(height: 2),
-          Text(
-            preview,
-            style:
-            TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.65)),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              name,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: isOwn
+                    ? Colors.white.withOpacity(0.85)
+                    : const Color(0xFF4C8DF6),
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              preview,
+              style: TextStyle(
+                  fontSize: 12, color: Colors.white.withOpacity(0.65)),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
-// ─── Context menu bottom sheet ────────────────────────────────────────────────
+// ─── Context menu ─────────────────────────────────────────────────────────────
 
 class _ContextMenuSheet extends StatelessWidget {
   final VoidCallback? onReply;
@@ -470,7 +547,9 @@ class _ContextMenuSheet extends StatelessWidget {
             const SizedBox(height: 8),
             if (onReply != null)
               _MenuItem(
-                  icon: Icons.reply_rounded, label: 'Reply', onTap: onReply!),
+                  icon: Icons.reply_rounded,
+                  label: 'Reply',
+                  onTap: onReply!),
             _MenuItem(
                 icon: Icons.add_reaction_outlined,
                 label: 'React',
@@ -513,7 +592,7 @@ class _MenuItem extends StatelessWidget {
   }
 }
 
-// ─── Emoji picker bottom sheet ────────────────────────────────────────────────
+// ─── Emoji picker ─────────────────────────────────────────────────────────────
 
 class _EmojiSheet extends StatelessWidget {
   final void Function(String) onPick;
@@ -564,7 +643,6 @@ class _EmojiSheet extends StatelessWidget {
 }
 
 // ─── Reaction detail bottom sheet ────────────────────────────────────────────
-// Replaces the old Dialog so it feels consistent with the rest of the UI.
 
 class _ReactionDetailSheet extends StatefulWidget {
   final String emoji;
@@ -599,7 +677,6 @@ class _ReactionDetailSheetState extends State<_ReactionDetailSheet> {
 
     for (final userId in widget.data.users) {
       final stateEvent = memberStates[userId];
-
       _names[userId] =
           stateEvent?.content.tryGet<String>('displayname') ??
               userId.split(':').first.replaceFirst('@', '');
@@ -641,7 +718,6 @@ class _ReactionDetailSheetState extends State<_ReactionDetailSheet> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // ── Handle bar ──
             const SizedBox(height: 10),
             Container(
               width: 36,
@@ -652,20 +728,16 @@ class _ReactionDetailSheetState extends State<_ReactionDetailSheet> {
               ),
             ),
             const SizedBox(height: 16),
-
-            // ── Header ──
             Text(widget.emoji, style: const TextStyle(fontSize: 36)),
             const SizedBox(height: 4),
             Text(
               '${widget.data.count} '
                   '${widget.data.count == 1 ? 'reaction' : 'reactions'}',
-              style: const TextStyle(color: Color(0xFF9AA4B2), fontSize: 13),
+              style:
+              const TextStyle(color: Color(0xFF9AA4B2), fontSize: 13),
             ),
             const SizedBox(height: 12),
-
             const Divider(color: Color(0xFF1D2530), height: 1),
-
-            // ── User list ──
             if (_loading)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 24),
@@ -692,10 +764,9 @@ class _ReactionDetailSheetState extends State<_ReactionDetailSheet> {
                       child: Row(
                         children: [
                           _Avatar(
-                            userId: userId,
-                            name: name,
-                            avatarUrl: avatarUrl,
-                          ),
+                              userId: userId,
+                              name: name,
+                              avatarUrl: avatarUrl),
                           const SizedBox(width: 14),
                           Expanded(
                             child: Text(
@@ -712,7 +783,8 @@ class _ReactionDetailSheetState extends State<_ReactionDetailSheet> {
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 8, vertical: 3),
                               decoration: BoxDecoration(
-                                color: const Color(0xFF2E7DFF).withOpacity(0.2),
+                                color: const Color(0xFF2E7DFF)
+                                    .withOpacity(0.2),
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: const Text('You',
@@ -727,7 +799,6 @@ class _ReactionDetailSheetState extends State<_ReactionDetailSheet> {
                   },
                 ),
               ),
-
             const SizedBox(height: 8),
           ],
         ),
@@ -741,11 +812,8 @@ class _Avatar extends StatelessWidget {
   final String name;
   final String? avatarUrl;
 
-  const _Avatar({
-    required this.userId,
-    required this.name,
-    required this.avatarUrl,
-  });
+  const _Avatar(
+      {required this.userId, required this.name, required this.avatarUrl});
 
   @override
   Widget build(BuildContext context) {
