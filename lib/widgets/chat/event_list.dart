@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
-import 'message_bubble.dart';
 import 'message_row.dart';
 
 class EventList extends StatefulWidget {
@@ -33,26 +32,75 @@ class EventList extends StatefulWidget {
 
 class EventListState extends State<EventList> {
   /// eventId -> GlobalKey for the MessageRow widget.
-  /// Used for both scroll-to-event and reconcileOptimistic.
   final Map<String, GlobalKey<MessageRowState>> _rowKeys = {};
+
+  /// eventId -> emoji -> set of userIds
+  Map<String, Map<String, Set<String>>> _reactionCache = {};
+
+  /// eventId -> event it is replying to (if any)
+  Map<String, Event?> _replyCache = {};
 
   GlobalKey<MessageRowState> _rowKey(String eventId) =>
       _rowKeys.putIfAbsent(eventId, () => GlobalKey<MessageRowState>());
 
   @override
+  void initState() {
+    super.initState();
+    _rebuildCaches();
+  }
+
+  @override
   void didUpdateWidget(EventList oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Every time the parent pushes a new events list (i.e. the timeline fired
-    // onChange/onInsert/onRemove), we tell every visible bubble to reconcile
-    // its optimistic state against the now-updated timeline.  This is the only
-    // place optimistic entries are cleared — no timers, no frame callbacks.
-    if (oldWidget.events != widget.events) {
+    if (oldWidget.events != widget.events || oldWidget.timeline != widget.timeline) {
+      _rebuildCaches();
       WidgetsBinding.instance.addPostFrameCallback((_) {
         for (final key in _rowKeys.values) {
           key.currentState?.reconcileBubble();
         }
       });
     }
+  }
+
+  void _rebuildCaches() {
+    final reactions = <String, Map<String, Set<String>>>{};
+    final replies = <String, Event?>{};
+
+    // Iterate the entire timeline once to build the reaction cache
+    for (final e in widget.timeline.events) {
+      if (e.type == EventTypes.Reaction) {
+        final targetId = e.relationshipEventId;
+        if (targetId == null) continue;
+
+        final key = e.content
+            .tryGetMap<String, dynamic>('m.relates_to')
+            ?.tryGet<String>('key');
+        if (key == null) continue;
+
+        reactions.putIfAbsent(targetId, () => {});
+        reactions[targetId]!.putIfAbsent(key, () => {});
+        reactions[targetId]![key]!.add(e.senderId);
+      }
+    }
+
+    // Iterate the displayable events to build the reply cache
+    for (final e in widget.events) {
+      final relatesTo = e.content.tryGetMap<String, dynamic>('m.relates_to');
+      if (relatesTo == null) continue;
+      final inReplyTo = relatesTo.tryGetMap<String, dynamic>('m.in_reply_to');
+      final replyEventId = inReplyTo?.tryGet<String>('event_id');
+      if (replyEventId == null) continue;
+
+      try {
+        replies[e.eventId] = widget.timeline.events
+            .firstWhere((ev) => ev.eventId == replyEventId);
+      } catch (_) {
+        replies[e.eventId] = null;
+      }
+    }
+
+    _reactionCache = reactions;
+    _replyCache = replies;
   }
 
   // ─── Scroll to event ───────────────────────────────────────────────────────
@@ -133,6 +181,8 @@ class EventListState extends State<EventList> {
           onReacted: widget.onReacted,
           onReply: widget.onReply,
           onScrollToEvent: scrollToEvent,
+          reactions: _reactionCache[event.eventId],
+          replyToEvent: _replyCache[event.eventId],
         );
       },
     );

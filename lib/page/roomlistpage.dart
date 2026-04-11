@@ -31,26 +31,6 @@ class _RoomListPageState extends State<RoomListPage> {
     super.dispose();
   }
 
-  static String stripReplyFallback(String body) {
-    if (!body.startsWith('> ')) return body;
-    final lines = body.split('\n');
-    int i = 0;
-    while (i < lines.length && lines[i].startsWith('> ')) {
-      i++;
-    }
-    // Skip the blank separator line.
-    if (i < lines.length && lines[i].trim().isEmpty) i++;
-    return lines.sublist(i).join('\n').trim();
-  }
-
-  String _getInsightText(Event event) {
-    String newBody = stripReplyFallback(event.body);
-    if (event.type != "m.room.message") {
-      newBody = "Event";
-    }
-    return newBody;
-  }
-
   void _listenForVerificationRequests() {
     final client = Provider.of<Client>(context, listen: false);
     _verifSub = client.onKeyVerificationRequest.stream.listen((request) {
@@ -81,23 +61,6 @@ class _RoomListPageState extends State<RoomListPage> {
     if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => RoomPage(room: room)),
-    );
-  }
-
-  Widget _buildAvatar(Uri? imageUri, Client client) {
-    if (imageUri == null) {
-      return const CircleAvatar(child: Icon(Icons.chat_bubble_outline));
-    }
-    return CachedNetworkImage(
-      imageUrl: imageUri.toString(),
-      httpHeaders: {
-        'Authorization': 'Bearer ${client.accessToken}',
-      },
-      imageBuilder: (_, img) => CircleAvatar(backgroundImage: img),
-      placeholder: (_, __) =>
-      const CircleAvatar(child: Icon(Icons.chat_bubble_outline)),
-      errorWidget: (_, __, ___) =>
-      const CircleAvatar(child: Icon(Icons.chat_bubble_outline)),
     );
   }
 
@@ -162,55 +125,166 @@ class _RoomListPageState extends State<RoomListPage> {
           Expanded(
             child: StreamBuilder(
               stream: client.onSync.stream,
-              builder: (context, _) => ListView.builder(
-                itemCount: client.rooms.length,
-                itemBuilder: (context, i) {
-                  final room = client.rooms[i];
-                  return ListTile(
-                    leading: FutureBuilder<Uri?>(
-                      future: room.avatar == null
-                          ? Future.value(null)
-                          : room.avatar!.getThumbnailUri(
-                        client,
-                        width: 56,
-                        height: 56,
-                      ),
-                      builder: (context, snapshot) =>
-                          _buildAvatar(snapshot.data, client),
-                    ),
-                    title: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            room.name.isEmpty
-                                ? room.getLocalizedDisplayname()
-                                : room.name,
-                            style: const TextStyle(
-                                color: Color(0xFFF2F4F7)),
-                          ),
-                        ),
-                        if (room.notificationCount > 0)
-                          Text(
-                            room.notificationCount.toString(),
-                            style: const TextStyle(
-                                color: Color(0xFF4C8DF6)),
-                          ),
-                      ],
-                    ),
-                    subtitle: Text(
-                      room.lastEvent?.body == null ? 'No messages' : _getInsightText(room.lastEvent!),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style:
-                      const TextStyle(color: Color(0xFF667085)),
-                    ),
-                    onTap: () => _join(room),
-                  );
-                },
-              ),
+              builder: (context, _) {
+                final rooms = client.rooms;
+                return ListView.builder(
+                  itemCount: rooms.length,
+                  itemBuilder: (context, i) {
+                    final room = rooms[i];
+                    return _RoomTile(room: room, client: client, onTap: () => _join(room));
+                  },
+                );
+              },
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _RoomTile extends StatelessWidget {
+  final Room room;
+  final Client client;
+  final VoidCallback onTap;
+
+  const _RoomTile({
+    required this.room,
+    required this.client,
+    required this.onTap,
+  });
+
+  String stripReplyFallback(String body) {
+    if (!body.startsWith('> ')) return body;
+    final lines = body.split('\n');
+    int i = 0;
+    while (i < lines.length && lines[i].startsWith('> ')) {
+      i++;
+    }
+    if (i < lines.length && lines[i].trim().isEmpty) i++;
+    return lines.sublist(i).join('\n').trim();
+  }
+
+  String _getInsightText(Event event) {
+    String newBody = stripReplyFallback(event.body);
+    if (event.type != "m.room.message") {
+      newBody = "Event";
+    }
+    return newBody;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: _RoomAvatar(room: room, client: client),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              room.getLocalizedDisplayname(),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Color(0xFFF2F4F7)),
+            ),
+          ),
+          if (room.notificationCount > 0)
+            Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2E7DFF),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  room.notificationCount.toString(),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+      subtitle: Text(
+        room.lastEvent?.body == null ? 'No messages' : _getInsightText(room.lastEvent!),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(color: Color(0xFF667085)),
+      ),
+      onTap: onTap,
+    );
+  }
+}
+
+class _RoomAvatar extends StatefulWidget {
+  final Room room;
+  final Client client;
+
+  const _RoomAvatar({required this.room, required this.client});
+
+  @override
+  State<_RoomAvatar> createState() => _RoomAvatarState();
+}
+
+class _RoomAvatarState extends State<_RoomAvatar> {
+  Uri? _avatarUri;
+  bool _resolved = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveAvatar();
+  }
+
+  @override
+  void didUpdateWidget(_RoomAvatar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.room.avatar != widget.room.avatar) {
+      _resolveAvatar();
+    }
+  }
+
+  void _resolveAvatar() async {
+    if (widget.room.avatar == null) {
+      if (mounted) setState(() { _avatarUri = null; _resolved = true; });
+      return;
+    }
+    try {
+      final uri = await widget.room.avatar!.getThumbnailUri(
+        widget.client,
+        width: 56,
+        height: 56,
+      );
+      if (mounted) setState(() { _avatarUri = uri; _resolved = true; });
+    } catch (_) {
+      if (mounted) setState(() { _resolved = true; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_resolved || _avatarUri == null) {
+      return const CircleAvatar(
+        backgroundColor: Color(0xFF1C2430),
+        child: Icon(Icons.chat_bubble_outline, size: 20, color: Color(0xFF667085)),
+      );
+    }
+    return CachedNetworkImage(
+      imageUrl: _avatarUri.toString(),
+      httpHeaders: {
+        'Authorization': 'Bearer ${widget.client.accessToken}',
+      },
+      imageBuilder: (_, img) => CircleAvatar(backgroundImage: img),
+      placeholder: (_, __) => const CircleAvatar(
+        backgroundColor: Color(0xFF1C2430),
+        child: Icon(Icons.chat_bubble_outline, size: 20, color: Color(0xFF667085)),
+      ),
+      errorWidget: (_, __, ___) => const CircleAvatar(
+        backgroundColor: Color(0xFF1C2430),
+        child: Icon(Icons.chat_bubble_outline, size: 20, color: Color(0xFF667085)),
       ),
     );
   }

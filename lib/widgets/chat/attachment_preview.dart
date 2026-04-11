@@ -5,7 +5,7 @@ import 'package:matrix/matrix.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 
-class AttachmentPreview extends StatelessWidget {
+class AttachmentPreview extends StatefulWidget {
   final Timeline timeline;
   final Event event;
   final Room room;
@@ -19,11 +19,42 @@ class AttachmentPreview extends StatelessWidget {
     required this.isOwn,
   });
 
-  bool _isImage() => event.attachmentMimetype.startsWith('image/');
-  bool _isVideo() => event.attachmentMimetype.startsWith('video/');
+  @override
+  State<AttachmentPreview> createState() => _AttachmentPreviewState();
+}
+
+class _AttachmentPreviewState extends State<AttachmentPreview> {
+  Uri? _uri;
+  bool _resolved = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveUri();
+  }
+
+  @override
+  void didUpdateWidget(AttachmentPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.event.eventId != widget.event.eventId) {
+      _resolveUri();
+    }
+  }
+
+  void _resolveUri() async {
+    try {
+      final uri = await widget.event.getAttachmentUri();
+      if (mounted) setState(() { _uri = uri; _resolved = true; });
+    } catch (_) {
+      if (mounted) setState(() { _resolved = true; });
+    }
+  }
+
+  bool _isImage() => widget.event.attachmentMimetype.startsWith('image/');
+  bool _isVideo() => widget.event.attachmentMimetype.startsWith('video/');
 
   String _mediaUrl(Uri uri) {
-    final token = room.client.accessToken ?? '';
+    final token = widget.room.client.accessToken ?? '';
     if (token.isEmpty) return uri.toString();
     final sep = uri.query.isEmpty ? '?' : '&';
     return '$uri${sep}access_token=$token';
@@ -31,14 +62,28 @@ class AttachmentPreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final name = event.getDisplayEvent(timeline).body.trim();
+    if (!_resolved) {
+      final height = _isImage() ? 200.0 : (_isVideo() ? 160.0 : 64.0);
+      return Container(
+        width: double.infinity,
+        height: height,
+        decoration: BoxDecoration(
+          color: const Color(0xFF0F141B),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFF263041)),
+        ),
+        child: const Center(child: CircularProgressIndicator.adaptive()),
+      );
+    }
+
+    final name = widget.event.getDisplayEvent(widget.timeline).body.trim();
     if (_isImage()) {
-      return _ImagePreview(event: event, name: name, mediaUrl: _mediaUrl);
+      return _ImagePreview(uri: _uri, name: name, mediaUrl: _mediaUrl);
     }
     if (_isVideo()) {
-      return _VideoPreview(event: event, name: name, mediaUrl: _mediaUrl);
+      return _VideoPreview(uri: _uri, name: name, mediaUrl: _mediaUrl);
     }
-    return _FilePreview(event: event, name: name, mediaUrl: _mediaUrl);
+    return _FilePreview(uri: _uri, name: name, mediaUrl: _mediaUrl);
   }
 }
 
@@ -178,95 +223,79 @@ class _ImageViewerPage extends StatelessWidget {
 // ─── Image preview ────────────────────────────────────────────────────────────
 
 class _ImagePreview extends StatelessWidget {
-  final Event event;
+  final Uri? uri;
   final String name;
   final String Function(Uri) mediaUrl;
   const _ImagePreview(
-      {required this.event, required this.name, required this.mediaUrl});
+      {required this.uri, required this.name, required this.mediaUrl});
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<Uri?>(
-      future: event.getAttachmentUri(),
-      builder: (context, snap) {
-        final uri = snap.data;
+    if (uri == null) {
+      return _shell(
+        child: const Center(
+          child: Icon(Icons.broken_image_outlined, color: Colors.white54),
+        ),
+      );
+    }
 
-        // Loading state
-        if (snap.connectionState != ConnectionState.done) {
-          return _shell(
-            child: const Center(child: CircularProgressIndicator.adaptive()),
-          );
-        }
+    final url = mediaUrl(uri!);
 
-        if (uri == null) {
-          return _shell(
-            child: const Center(
-              child: Icon(Icons.broken_image_outlined, color: Colors.white54),
+    return GestureDetector(
+      onTap: () => _openImageViewer(context, url, name),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Stack(
+          children: [
+            CachedNetworkImage(
+              imageUrl: url,
+              fit: BoxFit.cover,
+              memCacheWidth: 640,
+              width: double.infinity,
+              height: 200,
+              placeholder: (_, __) => _shell(
+                child: const Center(
+                    child: CircularProgressIndicator.adaptive()),
+              ),
+              errorWidget: (_, __, ___) => _shell(
+                child: const Center(
+                  child: Icon(Icons.broken_image_outlined,
+                      color: Colors.white54),
+                ),
+              ),
             ),
-          );
-        }
-
-        final url = mediaUrl(uri);
-
-        return GestureDetector(
-          onTap: () => _openImageViewer(context, url, name),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Stack(
-              children: [
-                CachedNetworkImage(
-                  imageUrl: url,
-                  fit: BoxFit.cover,
-                  memCacheWidth: 640,
-                  width: double.infinity,
-                  // Show a thumbnail-sized preview
-                  height: 200,
-                  placeholder: (_, __) => _shell(
-                    child: const Center(
-                        child: CircularProgressIndicator.adaptive()),
-                  ),
-                  errorWidget: (_, __, ___) => _shell(
-                    child: const Center(
-                      child: Icon(Icons.broken_image_outlined,
-                          color: Colors.white54),
-                    ),
-                  ),
+            Positioned(
+              bottom: 8, left: 8,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(8),
                 ),
-                // Tap-to-expand hint
-                Positioned(
-                  bottom: 8, left: 8,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.zoom_out_map,
-                            color: Colors.white, size: 14),
-                        SizedBox(width: 4),
-                        Text('View',
-                            style: TextStyle(
-                                color: Colors.white, fontSize: 12)),
-                      ],
-                    ),
-                  ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.zoom_out_map,
+                        color: Colors.white, size: 14),
+                    SizedBox(width: 4),
+                    Text('View',
+                        style: TextStyle(
+                            color: Colors.white, fontSize: 12)),
+                  ],
                 ),
-                Positioned(
-                  bottom: 8, right: 8,
-                  child: _CircleBtn(
-                    icon: Icons.download,
-                    onTap: () => _saveAndOpen(context, url, name),
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
-        );
-      },
+            Positioned(
+              bottom: 8, right: 8,
+              child: _CircleBtn(
+                icon: Icons.download,
+                onTap: () => _saveAndOpen(context, url, name),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -285,73 +314,67 @@ class _ImagePreview extends StatelessWidget {
 // ─── Video preview ────────────────────────────────────────────────────────────
 
 class _VideoPreview extends StatelessWidget {
-  final Event event;
+  final Uri? uri;
   final String name;
   final String Function(Uri) mediaUrl;
   const _VideoPreview(
-      {required this.event, required this.name, required this.mediaUrl});
+      {required this.uri, required this.name, required this.mediaUrl});
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<Uri?>(
-      future: event.getAttachmentUri(),
-      builder: (context, snap) {
-        final uri = snap.data;
-        final url = uri == null ? null : mediaUrl(uri);
+    final url = uri == null ? null : mediaUrl(uri!);
 
-        return GestureDetector(
-          onTap: url == null
-              ? null
-              : () => _saveAndOpen(context, url, name, openAfter: true),
-          child: Container(
-            width: double.infinity,
-            height: 160,
-            decoration: BoxDecoration(
-              color: const Color(0xFF0F141B),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFF263041)),
-            ),
-            child: Stack(
-              alignment: Alignment.center,
+    return GestureDetector(
+      onTap: url == null
+          ? null
+          : () => _saveAndOpen(context, url, name, openAfter: true),
+      child: Container(
+        width: double.infinity,
+        height: 160,
+        decoration: BoxDecoration(
+          color: const Color(0xFF0F141B),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFF263041)),
+        ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 56, height: 56,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.12),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.play_arrow_rounded,
-                          color: Colors.white, size: 32),
-                    ),
-                    const SizedBox(height: 10),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Text(
-                        name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            color: Colors.white60, fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
-                if (url != null)
-                  Positioned(
-                    bottom: 10, right: 10,
-                    child: _CircleBtn(
-                      icon: Icons.download,
-                      onTap: () => _saveAndOpen(context, url, name),
-                    ),
+                Container(
+                  width: 56, height: 56,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.12),
+                    shape: BoxShape.circle,
                   ),
+                  child: const Icon(Icons.play_arrow_rounded,
+                      color: Colors.white, size: 32),
+                ),
+                const SizedBox(height: 10),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white60, fontSize: 12),
+                  ),
+                ),
               ],
             ),
-          ),
-        );
-      },
+            if (url != null)
+              Positioned(
+                bottom: 10, right: 10,
+                child: _CircleBtn(
+                  icon: Icons.download,
+                  onTap: () => _saveAndOpen(context, url, name),
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -359,59 +382,53 @@ class _VideoPreview extends StatelessWidget {
 // ─── File preview ─────────────────────────────────────────────────────────────
 
 class _FilePreview extends StatelessWidget {
-  final Event event;
+  final Uri? uri;
   final String name;
   final String Function(Uri) mediaUrl;
   const _FilePreview(
-      {required this.event, required this.name, required this.mediaUrl});
+      {required this.uri, required this.name, required this.mediaUrl});
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<Uri?>(
-      future: event.getAttachmentUri(),
-      builder: (context, snap) {
-        final uri = snap.data;
-        final url = uri == null ? null : mediaUrl(uri);
-        return InkWell(
-          onTap: url == null
-              ? null
-              : () => _saveAndOpen(context, url, name, openAfter: true),
+    final url = uri == null ? null : mediaUrl(uri!);
+    return InkWell(
+      onTap: url == null
+          ? null
+          : () => _saveAndOpen(context, url, name, openAfter: true),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0F141B),
           borderRadius: BorderRadius.circular(12),
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
+          border: Border.all(color: const Color(0xFF263041)),
+        ),
+        child: Row(children: [
+          Container(
+            width: 40, height: 40,
             decoration: BoxDecoration(
-              color: const Color(0xFF0F141B),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFF263041)),
+              color: const Color(0xFF1E2A38),
+              borderRadius: BorderRadius.circular(8),
             ),
-            child: Row(children: [
-              Container(
-                width: 40, height: 40,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E2A38),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Icon(Icons.insert_drive_file_outlined,
-                    color: Color(0xFF4C8DF6), size: 22),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(name,
-                  style: const TextStyle(
+            child: const Icon(Icons.insert_drive_file_outlined,
+                color: Color(0xFF4C8DF6), size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(name,
+                style: const TextStyle(
                     color: Colors.white,
                     fontSize: 14,
                     fontWeight: FontWeight.w500
-                  ),
-                  overflow: TextOverflow.ellipsis),
-              ),
-              const SizedBox(width: 8),
-              const Icon(Icons.download_rounded,
-                  color: Colors.white54, size: 20),
-            ]),
+                ),
+                overflow: TextOverflow.ellipsis),
           ),
-        );
-      },
+          const SizedBox(width: 8),
+          const Icon(Icons.download_rounded,
+              color: Colors.white54, size: 20),
+        ]),
+      ),
     );
   }
 }

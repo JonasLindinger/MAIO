@@ -72,18 +72,6 @@ class _RoomPageState extends State<RoomPage> {
         .where(_isDisplayableMessage)
         .toList(growable: false);
 
-    if (next.length == _messageEvents.length) {
-      bool same = true;
-      for (int i = 0; i < next.length; i++) {
-        if (next[i].eventId != _messageEvents[i].eventId ||
-            next[i].status != _messageEvents[i].status) {
-          same = false;
-          break;
-        }
-      }
-      if (same) return;
-    }
-
     setState(() => _messageEvents = next);
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _fillScreen());

@@ -12,6 +12,8 @@ class MessageRow extends StatefulWidget {
   final Function onReacted;
   final Function(Event)? onReply;
   final void Function(String eventId)? onScrollToEvent;
+  final Map<String, Set<String>>? reactions;
+  final Event? replyToEvent;
 
   const MessageRow({
     super.key,
@@ -23,6 +25,8 @@ class MessageRow extends StatefulWidget {
     required this.onReacted,
     this.onReply,
     this.onScrollToEvent,
+    this.reactions,
+    this.replyToEvent,
   });
 
   @override
@@ -50,6 +54,8 @@ class MessageRowState extends State<MessageRow> {
       onReacted: widget.onReacted,
       onReply: widget.onReply,
       onScrollToEvent: widget.onScrollToEvent,
+      reactions: widget.reactions,
+      replyToEvent: widget.replyToEvent,
     );
 
     return Padding(

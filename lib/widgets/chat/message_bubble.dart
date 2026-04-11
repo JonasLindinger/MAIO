@@ -15,6 +15,8 @@ class MessageBubble extends StatefulWidget {
   final Function onReacted;
   final Function(Event)? onReply;
   final void Function(String eventId)? onScrollToEvent;
+  final Map<String, Set<String>>? reactions;
+  final Event? replyToEvent;
 
   const MessageBubble({
     super.key,
@@ -25,6 +27,8 @@ class MessageBubble extends StatefulWidget {
     required this.onReacted,
     this.onReply,
     this.onScrollToEvent,
+    this.reactions,
+    this.replyToEvent,
   });
 
   @override
@@ -48,11 +52,10 @@ class MessageBubbleState extends State<MessageBubble> {
   void reconcileOptimistic() {
     if (_optimistic.isEmpty) return;
     final ownId = widget.room.client.userID ?? '';
-    final serverReactions = _reactionsFromTimeline();
     final toRemove = <String>[];
     _optimistic.forEach((emoji, addedOptimistically) {
       final serverHasIt =
-          serverReactions[emoji]?.users.contains(ownId) ?? false;
+          widget.reactions?[emoji]?.contains(ownId) ?? false;
       // If server now reflects what we intended, or has gone the other way
       // (rare error case), the optimistic entry is stale — drop it.
       if (addedOptimistically == serverHasIt || !addedOptimistically == !serverHasIt) {
@@ -94,52 +97,17 @@ class MessageBubbleState extends State<MessageBubble> {
     return null;
   }
 
-  Event? _replyToEvent() {
-    final relatesTo =
-    widget.event.content.tryGetMap<String, dynamic>('m.relates_to');
-    if (relatesTo == null) return null;
-    final inReplyTo =
-    relatesTo.tryGetMap<String, dynamic>('m.in_reply_to');
-    final replyEventId = inReplyTo?.tryGet<String>('event_id');
-    if (replyEventId == null) return null;
-    try {
-      return widget.timeline.events
-          .firstWhere((e) => e.eventId == replyEventId);
-    } catch (_) {
-      return null;
-    }
-  }
-
   // ─── Reactions ─────────────────────────────────────────────────────────────
-
-  Map<String, _ReactionData> _reactionsFromTimeline() {
-    final map = <String, Set<String>>{};
-    for (final e in widget.timeline.events) {
-      if (e.type != EventTypes.Reaction) continue;
-      if (e.relationshipEventId != widget.event.eventId) continue;
-      final key = e.content
-          .tryGetMap<String, dynamic>('m.relates_to')
-          ?.tryGet<String>('key');
-      if (key == null) continue;
-      map.putIfAbsent(key, () => {});
-      map[key]!.add(e.senderId);
-    }
-    return map.map((k, v) => MapEntry(k, _ReactionData(users: v)));
-  }
 
   Map<String, _ReactionData> _reactions() {
     final ownId = widget.room.client.userID ?? '';
     final map = <String, Set<String>>{};
 
-    for (final e in widget.timeline.events) {
-      if (e.type != EventTypes.Reaction) continue;
-      if (e.relationshipEventId != widget.event.eventId) continue;
-      final key = e.content
-          .tryGetMap<String, dynamic>('m.relates_to')
-          ?.tryGet<String>('key');
-      if (key == null) continue;
-      map.putIfAbsent(key, () => {});
-      map[key]!.add(e.senderId);
+    // First use server reactions from the cache
+    if (widget.reactions != null) {
+      widget.reactions!.forEach((k, v) {
+        map[k] = Set.from(v);
+      });
     }
 
     _optimistic.forEach((emoji, added) {
@@ -157,14 +125,15 @@ class MessageBubbleState extends State<MessageBubble> {
 
   Future<void> _react(String emoji) async {
     final ownId = widget.room.client.userID ?? '';
-    final serverReactions = _reactionsFromTimeline();
-    final isMine = serverReactions[emoji]?.users.contains(ownId) ?? false;
+    final isMine = widget.reactions?[emoji]?.contains(ownId) ?? false;
 
     // Show intended end-state immediately.
     setState(() => _optimistic[emoji] = !isMine);
 
     try {
       if (isMine) {
+        // Still need to find the specific reaction event ID to redact it.
+        // This is a rare action (on click), so a timeline search here is acceptable.
         for (final e in widget.timeline.events) {
           if (e.type == EventTypes.Reaction &&
               e.relationshipEventId == widget.event.eventId &&
@@ -279,7 +248,7 @@ class MessageBubbleState extends State<MessageBubble> {
     final body = _eventBody();
     final reactions = _reactions();
     final ownId = widget.room.client.userID ?? '';
-    final replyEvent = _replyToEvent();
+    final replyEvent = widget.replyToEvent;
 
     final bubble = GestureDetector(
       onLongPress: _showContextMenu,
