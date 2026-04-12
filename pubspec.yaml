@@ -47,6 +47,9 @@ dependencies:
   open_filex: ^4.7.0
   emoji_picker_flutter: ^4.4.0
   characters: ^1.4.0
+  record: ^6.2.0
+  media_kit: ^1.1.11
+  media_kit_libs_audio: ^1.0.4
   flutter_local_notifications: ^21.0.0
 
 dev_dependencies:

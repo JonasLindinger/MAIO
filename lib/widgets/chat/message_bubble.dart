@@ -94,6 +94,13 @@ class MessageBubbleState extends State<MessageBubble> {
     if (raw.isEmpty) return null;
     final body = stripReplyFallback(raw);
     if (!widget.event.hasAttachment) return body.isEmpty ? null : body;
+
+    final msgtype = widget.event.content['msgtype'];
+    final isAudio = msgtype == 'm.audio' ||
+        widget.event.attachmentMimetype.startsWith('audio/') ||
+        widget.event.content.containsKey('org.matrix.msc3245.voice');
+    if (isAudio) return null;
+
     final filename = widget.event.content['filename'];
     if (filename != null && filename != body) return body.isEmpty ? null : body;
     return null;

@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vodozemac;
+import 'package:media_kit/media_kit.dart';
 import 'package:maio/page/loginpage.dart';
 import 'package:maio/page/roomlistpage.dart';
 import 'package:maio/utils/notification_manager.dart';
@@ -14,6 +15,8 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await vodozemac.init();
   await NotificationManager.initialize();
+
+  MediaKit.ensureInitialized();
 
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     sqfliteFfiInit();

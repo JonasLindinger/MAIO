@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
+import 'audio_player_widget.dart';
 
 class AttachmentPreview extends StatefulWidget {
   final Timeline timeline;
@@ -52,6 +53,12 @@ class _AttachmentPreviewState extends State<AttachmentPreview> {
 
   bool _isImage() => widget.event.attachmentMimetype.startsWith('image/');
   bool _isVideo() => widget.event.attachmentMimetype.startsWith('video/');
+  bool _isAudio() {
+    final msgtype = widget.event.content['msgtype'];
+    return msgtype == 'm.audio' ||
+        widget.event.attachmentMimetype.startsWith('audio/') ||
+        widget.event.content.containsKey('org.matrix.msc3245.voice');
+  }
 
   String _mediaUrl(Uri uri) {
     final token = widget.room.client.accessToken ?? '';
@@ -82,6 +89,10 @@ class _AttachmentPreviewState extends State<AttachmentPreview> {
     }
     if (_isVideo()) {
       return _VideoPreview(uri: _uri, name: name, mediaUrl: _mediaUrl);
+    }
+    if (_isAudio()) {
+      final url = _uri == null ? '' : _mediaUrl(_uri!);
+      return AudioPlayerWidget(url: url, isOwn: widget.isOwn);
     }
     return _FilePreview(uri: _uri, name: name, mediaUrl: _mediaUrl);
   }

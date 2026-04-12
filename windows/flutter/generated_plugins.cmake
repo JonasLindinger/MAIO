@@ -5,6 +5,8 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   emoji_picker_flutter
   file_selector_windows
+  media_kit_libs_windows_audio
+  record_windows
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST

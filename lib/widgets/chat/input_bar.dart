@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:matrix/matrix.dart';
 import 'package:mime/mime.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 import 'emoji_picker_sheet.dart';
 import '../chat/message_bubble.dart'; // for MessageBubbleState.stripReplyFallback
 
@@ -39,16 +41,23 @@ class InputBar extends StatefulWidget {
 
 class _InputBarState extends State<InputBar> {
   bool _showEmojiPicker = false;
+  late final AudioRecorder _audioRecorder;
+  bool _isRecording = false;
+  DateTime? _recordingStartTime;
 
   @override
   void initState() {
     super.initState();
     widget.composerFocusNode.addListener(_onFocusChange);
+    _audioRecorder = AudioRecorder();
+    widget.sendController.addListener(_onTextChange);
   }
 
   @override
   void dispose() {
     widget.composerFocusNode.removeListener(_onFocusChange);
+    widget.sendController.removeListener(_onTextChange);
+    _audioRecorder.dispose();
     super.dispose();
   }
 
@@ -58,12 +67,68 @@ class _InputBarState extends State<InputBar> {
     }
   }
 
+  void _onTextChange() {
+    setState(() {}); // Rebuild to toggle between mic and send icons
+  }
+
   void _toggleEmojiPicker() {
     if (_showEmojiPicker) {
       widget.composerFocusNode.requestFocus();
     } else {
       widget.composerFocusNode.unfocus();
       setState(() => _showEmojiPicker = true);
+    }
+  }
+
+  Future<void> _startRecording() async {
+    try {
+      if (await _audioRecorder.hasPermission()) {
+        final dir = await getTemporaryDirectory();
+        final path =
+            '${dir.path}/voice_message_${DateTime.now().millisecondsSinceEpoch}.ogg';
+        const config = RecordConfig(encoder: AudioEncoder.opus);
+        await _audioRecorder.start(config, path: path);
+        setState(() {
+          _isRecording = true;
+          _recordingStartTime = DateTime.now();
+        });
+      }
+    } catch (e) {
+      debugPrint('Error starting recording: $e');
+    }
+  }
+
+  Future<void> _stopRecording({bool cancel = false}) async {
+    try {
+      final path = await _audioRecorder.stop();
+      final duration = _recordingStartTime != null
+          ? DateTime.now().difference(_recordingStartTime!)
+          : Duration.zero;
+
+      setState(() {
+        _isRecording = false;
+        _recordingStartTime = null;
+      });
+      if (!cancel && path != null) {
+        final file = File(path);
+        if (await file.exists()) {
+          await _sendPickedFile(file,
+              forcedMime: 'audio/ogg; codecs=opus',
+              isVoice: true,
+              duration: duration);
+        }
+      } else if (path != null) {
+        final file = File(path);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      }
+    } catch (e) {
+      debugPrint('Error stopping recording: $e');
+      setState(() {
+        _isRecording = false;
+        _recordingStartTime = null;
+      });
     }
   }
 
@@ -102,11 +167,18 @@ class _InputBarState extends State<InputBar> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                IconButton(
-                  onPressed: () => _showAttachmentMenu(context),
-                  icon: const Icon(Icons.add_circle_outline,
-                      color: Color(0xFFF2F4F7)),
-                ),
+                if (!_isRecording)
+                  IconButton(
+                    onPressed: () => _showAttachmentMenu(context),
+                    icon: const Icon(Icons.add_circle_outline,
+                        color: Color(0xFFF2F4F7)),
+                  ),
+                if (_isRecording)
+                  IconButton(
+                    onPressed: () => _stopRecording(cancel: true),
+                    icon: const Icon(Icons.delete_outline,
+                        color: Colors.redAccent),
+                  ),
                 Expanded(
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(
@@ -123,7 +195,18 @@ class _InputBarState extends State<InputBar> {
                         children: [
                           Expanded(
                             child: Scrollbar(
-                              child: TextField(
+                              child: _isRecording
+                                  ? Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 16, vertical: 14),
+                                child: const Text(
+                                  'Recording...',
+                                  style: TextStyle(
+                                      color: Colors.redAccent,
+                                      fontWeight: FontWeight.bold),
+                                ),
+                              )
+                                  : TextField(
                                 controller: widget.sendController,
                                 focusNode: widget.composerFocusNode,
                                 style: const TextStyle(color: Colors.white),
@@ -142,34 +225,66 @@ class _InputBarState extends State<InputBar> {
                               ),
                             ),
                           ),
-                          IconButton(
-                            icon: Icon(
-                                _showEmojiPicker
-                                    ? Icons.keyboard_alt_outlined
-                                    : Icons.emoji_emotions_outlined,
-                                color: const Color(0xFF8B96A5)),
-                            onPressed: _toggleEmojiPicker,
-                          ),
+                          if (!_isRecording)
+                            IconButton(
+                              icon: Icon(
+                                  _showEmojiPicker
+                                      ? Icons.keyboard_alt_outlined
+                                      : Icons.emoji_emotions_outlined,
+                                  color: const Color(0xFF8B96A5)),
+                              onPressed: _toggleEmojiPicker,
+                            ),
                         ],
                       ),
                     ),
                   ),
                 ),
                 const SizedBox(width: 10),
-                InkWell(
-                  onTap: _send,
-                  borderRadius: BorderRadius.circular(24),
-                  child: Container(
-                    width: 48,
-                    height: 48,
-                    decoration: const BoxDecoration(
-                      color: Color(0xFF2E7DFF),
-                      shape: BoxShape.circle,
+                if (_isRecording)
+                  InkWell(
+                    onTap: () => _stopRecording(),
+                    borderRadius: BorderRadius.circular(24),
+                    child: Container(
+                      width: 48,
+                      height: 48,
+                      decoration: const BoxDecoration(
+                        color: Colors.redAccent,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.stop_rounded,
+                          color: Colors.white, size: 24),
                     ),
-                    child: const Icon(Icons.send_rounded,
-                        color: Colors.white, size: 20),
+                  )
+                else if (widget.sendController.text.trim().isEmpty)
+                  InkWell(
+                    onTap: _startRecording,
+                    borderRadius: BorderRadius.circular(24),
+                    child: Container(
+                      width: 48,
+                      height: 48,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF1A212C),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.mic_none_rounded,
+                          color: Color(0xFF8B96A5), size: 24),
+                    ),
+                  )
+                else
+                  InkWell(
+                    onTap: _send,
+                    borderRadius: BorderRadius.circular(24),
+                    child: Container(
+                      width: 48,
+                      height: 48,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF2E7DFF),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.send_rounded,
+                          color: Colors.white, size: 20),
+                    ),
                   ),
-                ),
               ],
             ),
           ),
@@ -301,7 +416,7 @@ class _InputBarState extends State<InputBar> {
   }
 
   Future<void> _sendPickedFile(File file,
-      {String? forcedMime}) async {
+      {String? forcedMime, bool isVoice = false, Duration duration = Duration.zero}) async {
     if (widget.isSendingMedia) return;
     widget.onStartSendingMedia();
     try {
@@ -311,8 +426,28 @@ class _InputBarState extends State<InputBar> {
       final fileName =
           file.path.split(Platform.pathSeparator).last;
       final bytes = await file.readAsBytes();
-      await widget.room.sendFileEvent(
-          MatrixFile(bytes: bytes, name: fileName, mimeType: mimeType));
+
+      if (isVoice) {
+        await widget.room.sendFileEvent(
+          MatrixFile(bytes: bytes, name: fileName, mimeType: mimeType),
+          extraContent: {
+            'msgtype': 'm.audio',
+            'org.matrix.msc3245.voice': {},
+            'org.matrix.msc1767.audio': {
+              'duration': duration.inMilliseconds,
+            },
+            'info': {
+              'duration': duration.inMilliseconds,
+              'mimetype': mimeType,
+              'size': bytes.length,
+              'm.voice': {},
+            },
+          },
+        );
+      } else {
+        await widget.room.sendFileEvent(
+            MatrixFile(bytes: bytes, name: fileName, mimeType: mimeType));
+      }
     } finally {
       widget.onFinishedSendingMedia();
     }
