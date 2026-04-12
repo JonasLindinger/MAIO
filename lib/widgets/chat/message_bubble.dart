@@ -42,13 +42,18 @@ class MessageBubbleState extends State<MessageBubble> {
   double _dragOffset = 0;
   bool _replyArmed = false;
 
-  // ─── Public API called by EventList ────────────────────────────────────────
+  @override
+  void didUpdateWidget(MessageBubble oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.reactions != widget.reactions) {
+      reconcileOptimistic();
+    }
+  }
 
-  /// Called by EventList every time the timeline updates (onChange/onInsert/
-  /// onRemove). We check each pending optimistic entry: if the server state
-  /// now matches the intended outcome we drop the entry; if it contradicts
-  /// we also drop it (nothing better to do). This is the ONLY place we clear
-  /// optimistic entries — never on a fixed timer or frame callback.
+  // ─── Public API ────────────────────────────────────────────────────────────
+
+  /// Checks each pending optimistic entry: if the server state now matches the
+  /// intended outcome we drop the entry.
   void reconcileOptimistic() {
     if (_optimistic.isEmpty) return;
     final ownId = widget.room.client.userID ?? '';
@@ -56,9 +61,7 @@ class MessageBubbleState extends State<MessageBubble> {
     _optimistic.forEach((emoji, addedOptimistically) {
       final serverHasIt =
           widget.reactions?[emoji]?.contains(ownId) ?? false;
-      // If server now reflects what we intended, or has gone the other way
-      // (rare error case), the optimistic entry is stale — drop it.
-      if (addedOptimistically == serverHasIt || !addedOptimistically == !serverHasIt) {
+      if (addedOptimistically == serverHasIt) {
         toRemove.add(emoji);
       }
     });
@@ -265,9 +268,9 @@ class MessageBubbleState extends State<MessageBubble> {
           ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.15),
-              blurRadius: 8,
-              offset: const Offset(0, 3),
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 4,
+              offset: const Offset(0, 2),
             ),
           ],
         ),
@@ -327,26 +330,28 @@ class MessageBubbleState extends State<MessageBubble> {
     final swipeable = GestureDetector(
       onHorizontalDragUpdate: _onDragUpdate,
       onHorizontalDragEnd: _onDragEnd,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          if (!widget.isOwn)
-            Positioned(
-                left: -40,
-                top: 0,
-                bottom: 0,
-                child: Center(child: replyHint)),
-          if (widget.isOwn)
-            Positioned(
-                right: -40,
-                top: 0,
-                bottom: 0,
-                child: Center(child: replyHint)),
-          Transform.translate(
-            offset: Offset(widget.isOwn ? -_dragOffset : _dragOffset, 0),
-            child: bubble,
-          ),
-        ],
+      child: RepaintBoundary(
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            if (!widget.isOwn)
+              Positioned(
+                  left: -40,
+                  top: 0,
+                  bottom: 0,
+                  child: Center(child: replyHint)),
+            if (widget.isOwn)
+              Positioned(
+                  right: -40,
+                  top: 0,
+                  bottom: 0,
+                  child: Center(child: replyHint)),
+            Transform.translate(
+              offset: Offset(widget.isOwn ? -_dragOffset : _dragOffset, 0),
+              child: bubble,
+            ),
+          ],
+        ),
       ),
     );
 

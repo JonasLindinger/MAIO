@@ -54,20 +54,17 @@ class EventListState extends State<EventList> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.events != widget.events || oldWidget.timeline != widget.timeline) {
       _rebuildCaches();
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        for (final key in _rowKeys.values) {
-          key.currentState?.reconcileBubble();
-        }
-      });
     }
   }
 
   void _rebuildCaches() {
     final reactions = <String, Map<String, Set<String>>>{};
     final replies = <String, Event?>{};
+    final eventMap = <String, Event>{};
 
-    // Iterate the entire timeline once to build the reaction cache
+    // Build a map of all events in the timeline for O(1) lookup
     for (final e in widget.timeline.events) {
+      eventMap[e.eventId] = e;
       if (e.type == EventTypes.Reaction) {
         final targetId = e.relationshipEventId;
         if (targetId == null) continue;
@@ -83,7 +80,7 @@ class EventListState extends State<EventList> {
       }
     }
 
-    // Iterate the displayable events to build the reply cache
+    // Resolve replies using the eventMap
     for (final e in widget.events) {
       final relatesTo = e.content.tryGetMap<String, dynamic>('m.relates_to');
       if (relatesTo == null) continue;
@@ -91,12 +88,7 @@ class EventListState extends State<EventList> {
       final replyEventId = inReplyTo?.tryGet<String>('event_id');
       if (replyEventId == null) continue;
 
-      try {
-        replies[e.eventId] = widget.timeline.events
-            .firstWhere((ev) => ev.eventId == replyEventId);
-      } catch (_) {
-        replies[e.eventId] = null;
-      }
+      replies[e.eventId] = eventMap[replyEventId];
     }
 
     _reactionCache = reactions;
@@ -133,11 +125,9 @@ class EventListState extends State<EventList> {
     }
 
     // Item not currently built (outside lazy-build range). Estimate position:
-    // average row height × index gives a rough offset in a reversed list.
+    // In a reversed list, index 0 is at offset 0.
     const estimatedRowHeight = 72.0;
-    final target =
-    (sc.position.maxScrollExtent - index * estimatedRowHeight)
-        .clamp(0.0, sc.position.maxScrollExtent);
+    final target = (index * estimatedRowHeight).clamp(0.0, sc.position.maxScrollExtent);
     sc.animateTo(target,
         duration: const Duration(milliseconds: 350), curve: Curves.easeInOut);
   }

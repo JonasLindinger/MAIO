@@ -37,12 +37,6 @@ class MessageRowState extends State<MessageRow> {
   final GlobalKey<MessageBubbleState> _bubbleKey =
   GlobalKey<MessageBubbleState>();
 
-  /// Called by EventList whenever the timeline has updated.
-  /// Forwards to the bubble so it can drop stale optimistic entries.
-  void reconcileBubble() {
-    _bubbleKey.currentState?.reconcileOptimistic();
-  }
-
   @override
   Widget build(BuildContext context) {
     final bubble = MessageBubble(
