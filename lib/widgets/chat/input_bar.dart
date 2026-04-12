@@ -4,9 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:matrix/matrix.dart';
 import 'package:mime/mime.dart';
+import 'emoji_picker_sheet.dart';
 import '../chat/message_bubble.dart'; // for MessageBubbleState.stripReplyFallback
 
-class InputBar extends StatelessWidget {
+class InputBar extends StatefulWidget {
   final TextEditingController sendController;
   final FocusNode composerFocusNode;
   final Room room;
@@ -32,6 +33,55 @@ class InputBar extends StatelessWidget {
   });
 
   @override
+  State<InputBar> createState() => _InputBarState();
+}
+
+class _InputBarState extends State<InputBar> {
+  bool _showEmojiPicker = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.composerFocusNode.addListener(_onFocusChange);
+  }
+
+  @override
+  void dispose() {
+    widget.composerFocusNode.removeListener(_onFocusChange);
+    super.dispose();
+  }
+
+  void _onFocusChange() {
+    if (widget.composerFocusNode.hasFocus && _showEmojiPicker) {
+      setState(() => _showEmojiPicker = false);
+    }
+  }
+
+  void _toggleEmojiPicker() {
+    if (_showEmojiPicker) {
+      widget.composerFocusNode.requestFocus();
+    } else {
+      widget.composerFocusNode.unfocus();
+      setState(() => _showEmojiPicker = true);
+    }
+  }
+
+  void _send() {
+    final message = widget.sendController.text.trim();
+    if (message.isEmpty) return;
+
+    if (widget.replyToEvent != null) {
+      widget.room.sendTextEvent(message, inReplyTo: widget.replyToEvent);
+      widget.onCancelReply?.call();
+    } else {
+      widget.room.sendTextEvent(message);
+    }
+
+    widget.sendController.clear();
+    widget.onSendMessage();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Container(
       decoration: const BoxDecoration(
@@ -41,10 +91,10 @@ class InputBar extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (replyToEvent != null)
+          if (widget.replyToEvent != null)
             _ReplyBanner(
-              event: replyToEvent!,
-              onCancel: onCancelReply ?? () {},
+              event: widget.replyToEvent!,
+              onCancel: widget.onCancelReply ?? () {},
             ),
           Padding(
             padding: const EdgeInsets.fromLTRB(10, 10, 10, 12),
@@ -67,24 +117,39 @@ class InputBar extends StatelessWidget {
                         border:
                         Border.all(color: const Color(0xFF263041)),
                       ),
-                      child: Scrollbar(
-                        child: TextField(
-                          controller: sendController,
-                          focusNode: composerFocusNode,
-                          style: const TextStyle(color: Colors.white),
-                          keyboardType: TextInputType.multiline,
-                          minLines: 1,
-                          maxLines: 6,
-                          textInputAction: TextInputAction.newline,
-                          decoration: const InputDecoration(
-                            hintText: 'Message',
-                            hintStyle:
-                            TextStyle(color: Color(0xFF8B96A5)),
-                            contentPadding: EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 14),
-                            border: InputBorder.none,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Expanded(
+                            child: Scrollbar(
+                              child: TextField(
+                                controller: widget.sendController,
+                                focusNode: widget.composerFocusNode,
+                                style: const TextStyle(color: Colors.white),
+                                keyboardType: TextInputType.multiline,
+                                minLines: 1,
+                                maxLines: 6,
+                                textInputAction: TextInputAction.newline,
+                                decoration: const InputDecoration(
+                                  hintText: 'Message',
+                                  hintStyle:
+                                  TextStyle(color: Color(0xFF8B96A5)),
+                                  contentPadding: EdgeInsets.symmetric(
+                                      horizontal: 16, vertical: 14),
+                                  border: InputBorder.none,
+                                ),
+                              ),
+                            ),
                           ),
-                        ),
+                          IconButton(
+                            icon: Icon(
+                                _showEmojiPicker
+                                    ? Icons.keyboard_alt_outlined
+                                    : Icons.emoji_emotions_outlined,
+                                color: const Color(0xFF8B96A5)),
+                            onPressed: _toggleEmojiPicker,
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -107,28 +172,48 @@ class InputBar extends StatelessWidget {
               ],
             ),
           ),
+          if (_showEmojiPicker)
+            EmojiPickerSheet(
+              onPick: (emoji) {
+                final text = widget.sendController.text;
+                final selection = widget.sendController.selection;
+                final newText = text.replaceRange(
+                  selection.start.clamp(0, text.length),
+                  selection.end.clamp(0, text.length),
+                  emoji,
+                );
+                widget.sendController.value = TextEditingValue(
+                  text: newText,
+                  selection: TextSelection.collapsed(
+                    offset: (selection.start.clamp(0, text.length)) + emoji.length,
+                  ),
+                );
+              },
+              onBackspacePressed: () {
+                final text = widget.sendController.text;
+                final selection = widget.sendController.selection;
+                if (selection.start > 0) {
+                  final newText = text.replaceRange(
+                    selection.start - 1,
+                    selection.start,
+                    '',
+                  );
+                  widget.sendController.value = TextEditingValue(
+                    text: newText,
+                    selection: TextSelection.collapsed(
+                      offset: selection.start - 1,
+                    ),
+                  );
+                }
+              },
+            ),
         ],
       ),
     );
   }
 
-  void _send() {
-    final message = sendController.text.trim();
-    if (message.isEmpty) return;
-
-    if (replyToEvent != null) {
-      room.sendTextEvent(message, inReplyTo: replyToEvent);
-      onCancelReply?.call();
-    } else {
-      room.sendTextEvent(message);
-    }
-
-    sendController.clear();
-    onSendMessage();
-  }
-
   Future<void> _showAttachmentMenu(BuildContext context) async {
-    if (isSendingMedia) return;
+    if (widget.isSendingMedia) return;
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF10151D),
@@ -208,8 +293,8 @@ class InputBar extends StatelessWidget {
 
   Future<void> _sendPickedFile(File file,
       {String? forcedMime}) async {
-    if (isSendingMedia) return;
-    onStartSendingMedia();
+    if (widget.isSendingMedia) return;
+    widget.onStartSendingMedia();
     try {
       final mimeType = forcedMime ??
           lookupMimeType(file.path) ??
@@ -217,10 +302,10 @@ class InputBar extends StatelessWidget {
       final fileName =
           file.path.split(Platform.pathSeparator).last;
       final bytes = await file.readAsBytes();
-      await room.sendFileEvent(
+      await widget.room.sendFileEvent(
           MatrixFile(bytes: bytes, name: fileName, mimeType: mimeType));
     } finally {
-      onFinishedSendingMedia();
+      widget.onFinishedSendingMedia();
     }
   }
 
