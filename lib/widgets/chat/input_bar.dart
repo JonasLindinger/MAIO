@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:characters/characters.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -192,16 +193,24 @@ class _InputBarState extends State<InputBar> {
               onBackspacePressed: () {
                 final text = widget.sendController.text;
                 final selection = widget.sendController.selection;
-                if (selection.start > 0) {
-                  final newText = text.replaceRange(
-                    selection.start - 1,
-                    selection.start,
-                    '',
-                  );
+
+                if (!selection.isCollapsed) {
+                  // If something is selected, delete the selection.
+                  final newText = text.replaceRange(selection.start, selection.end, '');
                   widget.sendController.value = TextEditingValue(
                     text: newText,
+                    selection: TextSelection.collapsed(offset: selection.start),
+                  );
+                } else if (selection.start > 0) {
+                  // Delete the last grapheme cluster (proper emoji support).
+                  final textBefore = text.substring(0, selection.start);
+                  final textAfter = text.substring(selection.end);
+                  final newTextBefore = textBefore.characters.skipLast(1).toString();
+
+                  widget.sendController.value = TextEditingValue(
+                    text: newTextBefore + textAfter,
                     selection: TextSelection.collapsed(
-                      offset: selection.start - 1,
+                      offset: newTextBefore.length,
                     ),
                   );
                 }
