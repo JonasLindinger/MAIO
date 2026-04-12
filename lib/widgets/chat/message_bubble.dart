@@ -128,19 +128,23 @@ class MessageBubbleState extends State<MessageBubble> {
 
   Future<void> _react(String emoji) async {
     final ownId = widget.room.client.userID ?? '';
-    final isMine = widget.reactions?[emoji]?.contains(ownId) ?? false;
+
+    // Use the effective state (server + optimistic) to determine toggle action.
+    final currentReactions = _reactions();
+    final isCurrentlyMine = currentReactions[emoji]?.users.contains(ownId) ?? false;
 
     // Show intended end-state immediately.
-    setState(() => _optimistic[emoji] = !isMine);
+    setState(() => _optimistic[emoji] = !isCurrentlyMine);
 
     try {
-      if (isMine) {
+      if (isCurrentlyMine) {
         // Still need to find the specific reaction event ID to redact it.
-        // This is a rare action (on click), so a timeline search here is acceptable.
+        // We look for an event that hasn't been redacted yet.
         for (final e in widget.timeline.events) {
           if (e.type == EventTypes.Reaction &&
               e.relationshipEventId == widget.event.eventId &&
-              e.senderId == ownId) {
+              e.senderId == ownId &&
+              !e.redacted) {
             final key = e.content
                 .tryGetMap<String, dynamic>('m.relates_to')
                 ?.tryGet<String>('key');

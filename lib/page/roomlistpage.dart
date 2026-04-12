@@ -1,8 +1,8 @@
 import 'dart:async';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:maio/page/roompage.dart';
 import 'package:maio/page/verificationpage.dart';
+import 'package:maio/widgets/chat/avatar.dart';
 import 'package:matrix/encryption.dart';
 import 'package:matrix/matrix.dart';
 import 'package:provider/provider.dart';
@@ -18,16 +18,22 @@ class RoomListPage extends StatefulWidget {
 class _RoomListPageState extends State<RoomListPage> {
   StreamSubscription? _verifSub;
   KeyVerification? _pendingRequest;
+  final TextEditingController _searchController = TextEditingController();
+  bool _isSearching = false;
 
   @override
   void initState() {
     super.initState();
     _listenForVerificationRequests();
+    _searchController.addListener(() {
+      setState(() {});
+    });
   }
 
   @override
   void dispose() {
     _verifSub?.cancel();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -72,9 +78,32 @@ class _RoomListPageState extends State<RoomListPage> {
       backgroundColor: const Color(0xFF0B0F14),
       appBar: AppBar(
         backgroundColor: const Color(0xFF0B0F14),
-        title: const Text('Chats',
+        title: _isSearching
+            ? TextField(
+          controller: _searchController,
+          autofocus: true,
+          style: const TextStyle(color: Color(0xFFF2F4F7)),
+          decoration: const InputDecoration(
+            hintText: 'Search chats...',
+            hintStyle: TextStyle(color: Color(0xFF667085)),
+            border: InputBorder.none,
+          ),
+        )
+            : const Text('Chats',
             style: TextStyle(color: Color(0xFFF2F4F7))),
         actions: [
+          IconButton(
+            icon: Icon(_isSearching ? Icons.close : Icons.search),
+            color: const Color(0xFFF2F4F7),
+            onPressed: () {
+              setState(() {
+                if (_isSearching) {
+                  _searchController.clear();
+                }
+                _isSearching = !_isSearching;
+              });
+            },
+          ),
           // Verify button — opens self-verification
           IconButton(
             icon: const Icon(Icons.verified_user_outlined),
@@ -126,7 +155,13 @@ class _RoomListPageState extends State<RoomListPage> {
             child: StreamBuilder(
               stream: client.onSync.stream,
               builder: (context, _) {
-                final rooms = client.rooms;
+                var rooms = client.rooms;
+                if (_searchController.text.isNotEmpty) {
+                  final query = _searchController.text.toLowerCase();
+                  rooms = rooms.where((r) =>
+                  r.getLocalizedDisplayname().toLowerCase().contains(query)
+                  ).toList();
+                }
                 return ListView.builder(
                   itemCount: rooms.length,
                   itemBuilder: (context, i) {
@@ -176,7 +211,7 @@ class _RoomTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      leading: _RoomAvatar(room: room, client: client),
+      leading: RoomAvatar(room: room, client: client),
       title: Row(
         children: [
           Expanded(
@@ -215,77 +250,6 @@ class _RoomTile extends StatelessWidget {
         style: const TextStyle(color: Color(0xFF667085)),
       ),
       onTap: onTap,
-    );
-  }
-}
-
-class _RoomAvatar extends StatefulWidget {
-  final Room room;
-  final Client client;
-
-  const _RoomAvatar({required this.room, required this.client});
-
-  @override
-  State<_RoomAvatar> createState() => _RoomAvatarState();
-}
-
-class _RoomAvatarState extends State<_RoomAvatar> {
-  Uri? _avatarUri;
-  bool _resolved = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _resolveAvatar();
-  }
-
-  @override
-  void didUpdateWidget(_RoomAvatar oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.room.avatar != widget.room.avatar) {
-      _resolveAvatar();
-    }
-  }
-
-  void _resolveAvatar() async {
-    if (widget.room.avatar == null) {
-      if (mounted) setState(() { _avatarUri = null; _resolved = true; });
-      return;
-    }
-    try {
-      final uri = await widget.room.avatar!.getThumbnailUri(
-        widget.client,
-        width: 56,
-        height: 56,
-      );
-      if (mounted) setState(() { _avatarUri = uri; _resolved = true; });
-    } catch (_) {
-      if (mounted) setState(() { _resolved = true; });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!_resolved || _avatarUri == null) {
-      return const CircleAvatar(
-        backgroundColor: Color(0xFF1C2430),
-        child: Icon(Icons.chat_bubble_outline, size: 20, color: Color(0xFF667085)),
-      );
-    }
-    return CachedNetworkImage(
-      imageUrl: _avatarUri.toString(),
-      httpHeaders: {
-        'Authorization': 'Bearer ${widget.client.accessToken}',
-      },
-      imageBuilder: (_, img) => CircleAvatar(backgroundImage: img),
-      placeholder: (_, __) => const CircleAvatar(
-        backgroundColor: Color(0xFF1C2430),
-        child: Icon(Icons.chat_bubble_outline, size: 20, color: Color(0xFF667085)),
-      ),
-      errorWidget: (_, __, ___) => const CircleAvatar(
-        backgroundColor: Color(0xFF1C2430),
-        child: Icon(Icons.chat_bubble_outline, size: 20, color: Color(0xFF667085)),
-      ),
     );
   }
 }

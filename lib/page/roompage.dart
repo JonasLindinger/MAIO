@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:maio/utils/notification_manager.dart';
+import 'package:maio/widgets/chat/avatar.dart';
 import 'package:maio/widgets/chat/input_bar.dart';
 import 'package:matrix/matrix.dart';
 
@@ -17,12 +18,14 @@ class _RoomPageState extends State<RoomPage> {
   late final Future<Timeline> _timelineFuture;
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _sendController = TextEditingController();
+  final TextEditingController _searchController = TextEditingController();
   final FocusNode _composerFocusNode = FocusNode();
 
   Timeline? _timeline;
   List<Event> _messageEvents = const [];
   bool _isRequestingHistory = false;
   bool _isSendingMedia = false;
+  bool _isSearching = false;
 
   /// The event the user is currently replying to, or null.
   Event? _replyToEvent;
@@ -47,6 +50,9 @@ class _RoomPageState extends State<RoomPage> {
           .addPostFrameCallback((_) => _fillScreen());
     });
     _scrollController.addListener(_onScroll);
+    _searchController.addListener(() {
+      setState(() {});
+    });
   }
 
   Future<void> _markAsRead() async {
@@ -62,6 +68,7 @@ class _RoomPageState extends State<RoomPage> {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _sendController.dispose();
+    _searchController.dispose();
     _composerFocusNode.dispose();
     super.dispose();
   }
@@ -158,6 +165,15 @@ class _RoomPageState extends State<RoomPage> {
   @override
   Widget build(BuildContext context) {
     final room = widget.room;
+
+    List<Event> displayEvents = _messageEvents;
+    if (_searchController.text.isNotEmpty) {
+      final query = _searchController.text.toLowerCase();
+      displayEvents = _messageEvents.where((e) =>
+          e.body.toLowerCase().contains(query)
+      ).toList();
+    }
+
     return Scaffold(
       backgroundColor: const Color(0xFF0B0F14),
       appBar: AppBar(
@@ -165,13 +181,56 @@ class _RoomPageState extends State<RoomPage> {
         foregroundColor: const Color(0xFFF2F4F7),
         elevation: 0,
         titleSpacing: 0,
-        title: Text(
-          room.name.isEmpty ? room.getLocalizedDisplayname() : room.name,
-          style: const TextStyle(
-              color: Color(0xFFF2F4F7),
-              fontSize: 16,
-              fontWeight: FontWeight.w600),
+        leadingWidth: _isSearching ? 48 : 92,
+        leading: _isSearching
+            ? IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            setState(() {
+              _isSearching = false;
+              _searchController.clear();
+            });
+          },
+        )
+            : Row(
+          children: [
+            const BackButton(),
+            RoomAvatar(room: room, client: room.client, radius: 16),
+          ],
         ),
+        title: _isSearching
+            ? TextField(
+          controller: _searchController,
+          autofocus: true,
+          style: const TextStyle(color: Color(0xFFF2F4F7)),
+          decoration: const InputDecoration(
+            hintText: 'Search messages...',
+            hintStyle: TextStyle(color: Color(0xFF667085)),
+            border: InputBorder.none,
+          ),
+        )
+            : Padding(
+          padding: const EdgeInsets.only(left: 8.0),
+          child: Text(
+            room.name.isEmpty ? room.getLocalizedDisplayname() : room.name,
+            style: const TextStyle(
+                color: Color(0xFFF2F4F7),
+                fontSize: 16,
+                fontWeight: FontWeight.w600),
+          ),
+        ),
+        actions: [
+          if (!_isSearching)
+            IconButton(
+              icon: const Icon(Icons.search),
+              onPressed: () => setState(() => _isSearching = true),
+            ),
+          if (_isSearching && _searchController.text.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.close),
+              onPressed: () => _searchController.clear(),
+            ),
+        ],
       ),
       body: SafeArea(
         child: Column(
@@ -181,7 +240,7 @@ class _RoomPageState extends State<RoomPage> {
                   ? const Center(
                   child: CircularProgressIndicator.adaptive())
                   : EventList(
-                events: _messageEvents,
+                events: displayEvents,
                 timeline: _timeline!,
                 room: room,
                 scrollController: _scrollController,
